@@ -1,0 +1,56 @@
+#!/bin/bash
+# BASI WAN K3N0B1 generated training script for: test_smoke
+set -e
+cd /mnt/d/Ai/basi-wan-k3n0b1/ext/musubi-tuner
+source /usr/bin/activate
+exec /usr/bin/accelerate \
+    launch \
+    --num_cpu_threads_per_process \
+    1 \
+    --mixed_precision \
+    bf16 \
+    /mnt/d/Ai/basi-wan-k3n0b1/ext/musubi-tuner/src/musubi_tuner/wan_train_network.py \
+    --task \
+    t2v-A14B \
+    --dit \
+    /x/low \
+    --t5 \
+    /x/t5 \
+    --vae \
+    /x/vae \
+    --dataset_config \
+    /mnt/d/Ai/basi-wan-k3n0b1/outputs/test_smoke/dataset.toml \
+    --sdpa \
+    --mixed_precision \
+    bf16 \
+    --blocks_to_swap \
+    10 \
+    --network_module \
+    networks.lora_wan \
+    --network_dim \
+    32 \
+    --network_alpha \
+    32 \
+    --optimizer_type \
+    adamw8bit \
+    --learning_rate \
+    0.0001 \
+    --timestep_sampling \
+    shift \
+    --discrete_flow_shift \
+    3.0 \
+    --max_train_epochs \
+    20 \
+    --save_every_n_epochs \
+    2 \
+    --seed \
+    42 \
+    --output_dir \
+    /mnt/d/Ai/basi-wan-k3n0b1/outputs/test_smoke \
+    --output_name \
+    test_smoke \
+    --max_data_loader_n_workers \
+    2 \
+    --persistent_data_loader_workers \
+    --fp8_base \
+    --gradient_checkpointing

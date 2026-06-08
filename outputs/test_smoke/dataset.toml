@@ -1,0 +1,14 @@
+[[datasets]]
+resolution = [ 832, 480,]
+target_frames = [ 81,]
+frame_extraction = "head"
+video_directory = "/tmp/fake_dataset"
+caption_extension = ".txt"
+fps = 16
+max_frames = 81
+batch_size = 1
+num_repeats = 1
+
+[general]
+caption_extension = ".txt"
+batch_size = 1

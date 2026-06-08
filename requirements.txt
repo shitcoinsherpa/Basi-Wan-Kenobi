@@ -1,0 +1,21 @@
+# BASI WAN K3N0B1 — Python deps (Pinokio install layer reads this).
+# Note: torch is installed separately by install.js to pick cu121 vs cu128
+# based on detected GPU. Don't pin torch here.
+gradio>=5.0
+# gradio_logsview removed 2026-06-07: was a never-imported dep; gym uses plain
+# gr.Textbox(autoscroll=True) for the live training log (last 200 lines).
+toml>=0.10
+huggingface_hub>=1.5
+safetensors>=0.4
+accelerate>=1.0
+diffusers>=0.32
+peft>=0.13
+transformers>=4.57.0,<5         # required for Qwen3-VL; musubi pin loosened in ext/musubi-tuner/pyproject.toml
+qwen-vl-utils>=0.0.8
+einops
+ffmpeg-python                   # ffprobe metadata path (also requires system ffmpeg)
+# TAEHV tiny-VAE for fast preview decode (P26). Not on PyPI; installed from git.
+taehv @ git+https://github.com/madebyollin/taehv.git
+# Optional GPU paths (installed by install.js as needed):
+# bitsandbytes>=0.45             # adamw8bit + FP8 optimizer
+# torchao>=0.12                  # FP8 weight quant
