@@ -138,6 +138,13 @@ def main():
     if a.offload == "group":
         pipe.enable_group_offload(onload_device=torch.device("cuda", 0), offload_device=torch.device("cpu"),
                                   offload_type="leaf_level", use_stream=True, low_cpu_mem_usage=True)
+        # Silence diffusers' group-offload trace warning ("some layers were not executed...").
+        # It fires once at step 0 because the dual_tower_bridge conditioner layers are conditional
+        # and don't run in the lazy-prefetch trace pass; they DO run in the real denoise (the
+        # validated v3 samples were generated this exact way with good lip-sync). It's a benign
+        # ~hundreds-of-layer-names wall of text; quiet it so the log stays readable. Errors still show.
+        import logging as _logging
+        _logging.getLogger("diffusers.hooks.group_offloading").setLevel(_logging.ERROR)
     elif a.offload == "cpu":
         pipe.enable_model_cpu_offload(0)
     else:
