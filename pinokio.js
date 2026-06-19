@@ -23,11 +23,20 @@ module.exports = {
 
     if (starting) {
       if (local && local.url) {
+        // [2026-06-09] popout: true was opening the URL in the OS
+        // browser via Electron shell.openExternal (per Pinokio
+        // browser-popout-surface.js). Omit it so the menu item loads
+        // local.url in Pinokio's embedded iframe instead — matches the
+        // pinokiofactory/wan + pinokiofactory/forge canonical. Pinokio
+        // strips X-Frame-Options + frame-ancestors from the response
+        // headers (full.js:3212-3250) so Gradio's CSP can't block the
+        // embed. default: true makes "Open Web UI" the auto-launched
+        // tab when Start finishes.
         items.push({
+          default: true,
           icon: "fa-solid fa-rocket",
           text: "Open Web UI",
           href: local.url,
-          popout: true,
         });
       }
       items.push({

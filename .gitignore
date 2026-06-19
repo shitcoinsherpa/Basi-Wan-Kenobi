@@ -1,0 +1,45 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Pinokio runtime artifacts (per-install state, not source)
+env/
+env_mova/
+ext/
+logs/
+outputs/
+
+# Local dev artifacts
+*.log
+*.pt
+*.tmp
+.DS_Store
+
+# Build artifacts of the BASIWAN CUDA kernel (regenerated per machine)
+tools/gguf_vendor/basiwan_q4_kernel/build/
+*.pyd
+*.so
+*.dll
+
+# IDE
+.idea/
+.vscode/
+
+# Model weights auto-downloaded at install (taehv etc.)
+checkpoints/
+
+# AI coding-assistant tooling (dev-only; never published)
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+QWEN.md
+AGENT.md
+.cursorrules
+.clinerules
+.windsurfrules
+.geminiignore
+.aider*
+
+# Dev/bench/scratch scripts (hardcoded paths, single-use; never published)
+dev/

@@ -38,8 +38,44 @@ class ClipInfo:
             self.issues = []
 
 
+def _probe_video_pyav(path: Path) -> ClipInfo:
+    """PyAV-based probe — no external binary required."""
+    import av
+    container = av.open(str(path))
+    try:
+        if not container.streams.video:
+            raise RuntimeError("no video stream")
+        stream = container.streams.video[0]
+        w = stream.codec_context.width
+        h = stream.codec_context.height
+        rate = stream.average_rate or stream.guessed_rate
+        fps = float(rate) if rate else 0.0
+        if container.duration:
+            dur = container.duration / 1_000_000.0
+        elif stream.duration and stream.time_base:
+            dur = float(stream.duration * stream.time_base)
+        else:
+            dur = 0.0
+        n_frames = stream.frames or int(round(fps * dur))
+        return ClipInfo(str(path), w, h, n_frames, fps, dur)
+    finally:
+        container.close()
+
+
 def probe_video(path: Path) -> ClipInfo:
-    """Use ffprobe to extract video metadata."""
+    """Extract video metadata. Prefers PyAV (no external binary needed) and
+    falls back to ffprobe binary on PATH.
+
+    [2026-06-09] Windows Pinokio installs don't ship ffprobe; PyAV (the `av`
+    package, already a hard dep) covers the same metadata fields.
+    """
+    try:
+        return _probe_video_pyav(path)
+    except Exception as pyav_err:
+        if not shutil.which("ffprobe"):
+            return ClipInfo(str(path), 0, 0, 0, 0, 0, valid=False,
+                            issues=[f"PyAV probe failed: {pyav_err}; "
+                                    f"ffprobe not on PATH"])
     cmd = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=width,height,nb_frames,r_frame_rate,duration",
@@ -50,11 +86,9 @@ def probe_video(path: Path) -> ClipInfo:
         info = json.loads(out)
         stream = info["streams"][0]
         w, h = stream["width"], stream["height"]
-        # r_frame_rate is "N/D" form, e.g. "30/1"
         num, den = (int(x) for x in stream["r_frame_rate"].split("/"))
         fps = num / den if den else 0
         dur = float(stream.get("duration", 0))
-        # nb_frames may be N/A for variable-fps; fallback to fps*duration
         try:
             n_frames = int(stream["nb_frames"])
         except (KeyError, ValueError):
@@ -208,10 +242,13 @@ def bucket_distribution(clips: Iterable[ClipInfo]) -> dict[tuple, int]:
 
 
 def scan_dataset(dataset_dir: str | Path, target_frames: int = 81) -> list[ClipInfo]:
-    """Walk dataset_dir, probe each video, validate, attach captions."""
+    """Walk dataset_dir, probe each video, validate, attach captions.
+
+    [2026-06-09] Removed hard-fail-if-no-ffprobe precheck. probe_video()
+    now uses PyAV first (no external binary needed), falls back to ffprobe
+    binary only if PyAV can't parse the file.
+    """
     dataset_dir = Path(dataset_dir)
-    if not shutil.which("ffprobe"):
-        raise RuntimeError("ffprobe not found in PATH; install ffmpeg")
     exts = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
     clips = []
     for p in sorted(dataset_dir.iterdir()):

@@ -2,20 +2,43 @@
 # Note: torch is installed separately by install.js to pick cu121 vs cu128
 # based on detected GPU. Don't pin torch here.
 gradio>=5.0
+# Gradio 5.x imports `multipart` (from python-multipart) but in some uv/pip
+# resolutions this dep doesn't land. Pin it explicitly — observed crashing
+# parler-tts under the same Pinokio venv layout (2026-06-08 user report:
+# "ModuleNotFoundError: No module named 'multipart'" at gradio.routes import).
+python-multipart>=0.0.18
 # gradio_logsview removed 2026-06-07: was a never-imported dep; gym uses plain
 # gr.Textbox(autoscroll=True) for the live training log (last 200 lines).
 toml>=0.10
-huggingface_hub>=1.5
+huggingface_hub>=0.34.0,<1.0          # transformers 4.57.x pins this range; >=1.5 conflicts (2026-06-08)
+hf_xet                                # Xet-storage fast path for HF downloads; without it the 8-17GB VLM pulls fall back to plain HTTP (2026-06-10)
 safetensors>=0.4
 accelerate>=1.0
 diffusers>=0.32
 peft>=0.13
+# Studio inference runner deps (vendored from /work/BASIWAN)
+gguf>=0.10                      # GGUF Q4_K_M / Q6_K loader for Wan2.2 quantized weights
+imageio>=2.34                   # mp4 writing
+imageio-ffmpeg>=0.5             # ffmpeg backend for imageio  # LOAD-BEARING: wheel fetches a GPLv3 ffmpeg binary at user install time.
+  # NEVER bundle this wheel/binary/env into a release artifact - see THIRD_PARTY_LICENSES.md
+dashscope>=1.20                 # Qwen prompt extension (optional, runner imports)
+numpy<2                         # transformers 4.57.x compat
+# Optional perf — flash_attn is build-from-source on Windows; the wan/
+# attention module falls back to PyTorch SDPA when flash_attn is absent.
 transformers>=4.57.0,<5         # required for Qwen3-VL; musubi pin loosened in ext/musubi-tuner/pyproject.toml
 qwen-vl-utils>=0.0.8
 einops
+ninja                           # [#395] REQUIRED to build the BASIWAN CUDA kernel.
+                                # torch cpp_extension needs ninja on PATH — both for
+                                # the install-time build (tools/build_kernel.py) AND
+                                # any lazy rebuild after a torch upgrade invalidates
+                                # the cached .pyd. Without it a fresh GPU install
+                                # cannot compile the Q4_K/Q6_K kernel -> inference
+                                # falls to the slow/forensic path. Pure tool, tiny.
 ffmpeg-python                   # ffprobe metadata path (also requires system ffmpeg)
 # TAEHV tiny-VAE for fast preview decode (P26). Not on PyPI; installed from git.
 taehv @ git+https://github.com/madebyollin/taehv.git
 # Optional GPU paths (installed by install.js as needed):
 # bitsandbytes>=0.45             # adamw8bit + FP8 optimizer
 # torchao>=0.12                  # FP8 weight quant
+librosa  # Wan2.2-S2V audio encoder (wav2vec2 input load/resample)

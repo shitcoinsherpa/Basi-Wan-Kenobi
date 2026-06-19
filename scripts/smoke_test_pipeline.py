@@ -21,7 +21,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-SAMPLE_VIDEO = Path("/mnt/d/Ai/transformers/work/Faster-Wan2.2/examples/pose.mp4")
+# Portable: BASIWAN_CKPT_DIR (default <repo>/checkpoints) + a sample clip from
+# BASIWAN_SAMPLE_VIDEO or the bundled examples/ dir. No dev-box paths.
+import os as _os
+_CKPT = Path(_os.environ.get("BASIWAN_CKPT_DIR", str(REPO / "checkpoints")))
+_T2V = _CKPT / "Wan2.2-T2V-A14B"
+SAMPLE_VIDEO = Path(_os.environ.get(
+    "BASIWAN_SAMPLE_VIDEO", str(REPO / "examples" / "pose.mp4")))
 
 
 def _fail(msg: str) -> None:
@@ -36,7 +42,7 @@ def _ok(msg: str) -> None:
 def main() -> int:
     print("BASI pipeline smoke test\n")
     if not SAMPLE_VIDEO.exists():
-        _fail(f"sample video not found at {SAMPLE_VIDEO}. Adjust SAMPLE_VIDEO at top of script.")
+        _fail(f"sample video not found at {SAMPLE_VIDEO}. Set BASIWAN_SAMPLE_VIDEO to any short .mp4 clip.")
 
     from basi.dataset import scan_dataset, bucket_distribution
     from basi.presets import PRESETS, auto_select, detect_vram_gb
@@ -68,10 +74,10 @@ def main() -> int:
     cfg = TrainConfig(
         lora_name="_smoke_pipeline",
         dataset_dir=str(ds_dir),
-        dit_low_path="/mnt/d/Ai/checkpoints/Wan2.2-T2V-A14B/low_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors",
+        dit_low_path=str(_T2V / "low_noise_model" / "diffusion_pytorch_model-00001-of-00006.safetensors"),
         dit_high_path=None,
-        t5_path="/mnt/d/Ai/checkpoints/Wan2.2-T2V-A14B/models_t5_umt5-xxl-enc-bf16.pth",
-        vae_path="/mnt/d/Ai/checkpoints/Wan2.2-T2V-A14B/Wan2.1_VAE.pth",
+        t5_path=str(_T2V / "models_t5_umt5-xxl-enc-bf16.pth"),
+        vae_path=str(_T2V / "Wan2.1_VAE.pth"),
         preset=preset,
         target_resolution=(832, 480), target_frames=81,
         max_train_epochs=1, sample_every_n_steps=0,

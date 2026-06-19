@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,9 +29,17 @@ class TrainConfig:
     preset: Preset
     target_resolution: tuple[int, int]   # e.g. (832, 480)
     target_frames: int        # e.g. 81 (4n+1)
-    max_train_epochs: int = 20
+    # [2026-06-09] 16 epochs default (was 20). Gives 8 evaluable checkpoints
+    # at save_every=2. Overfit symptoms show ~ep 10-12 on small datasets;
+    # 16 is the sweet spot for first-attempt LoRAs.
+    max_train_epochs: int = 16
     save_every_n_epochs: int = 2
-    sample_every_n_steps: int = 200
+    # [2026-06-10] Per-EPOCH sampling is the primary monitoring signal —
+    # one render per epoch matches the save_every=2 checkpoint cadence so
+    # every checkpoint has visual evidence. Step-based sampling (below)
+    # is the optional extra-frequency knob; 0 disables it.
+    sample_every_n_epochs: int | None = 1
+    sample_every_n_steps: int = 0
     sample_prompts: list[str] | None = None
     trigger_word: str | None = None
     seed: int = 42
@@ -45,11 +54,48 @@ class TrainConfig:
     # groups mixed-resolution clips into per-bucket batches rather than padding
     # to the nominal target_resolution.
     enable_bucket: bool = True
-    # T4.H: Advanced optimizer args (None = musubi default).
-    lr_scheduler: str | None = None       # constant_with_warmup / cosine / linear / rex
-    lr_warmup_steps: int | None = None
+    # [2026-06-09] Scheduler defaults wired in per research synthesis.
+    # cosine_with_restarts prevents late-training overfit (lr decays then
+    # spikes back); warmup 100 steps avoids early LR shock on small batches.
+    # Override via UI for advanced tuning.
+    lr_scheduler: str | None = "cosine_with_restarts"
+    lr_warmup_steps: int | None = 100
     max_grad_norm: float | None = None    # 0 = disable clip_grad_norm
     weight_decay: float | None = None
+    # [2026-06-10] Source video fps for musubi's 16fps resampling. None =
+    # treat frames as-is (correct for 16fps sources); set to the clips'
+    # real fps (e.g. 24.0 for TV rips) so a 33-frame training window spans
+    # 2 real seconds instead of 1.4. Schema key is `source_fps` — the old
+    # `fps` key was REJECTED by musubi's validator (caught live: cache
+    # step failed with "extra keys not allowed @ datasets[0].fps").
+    source_fps: float | None = None
+    # [2026-06-10] Timestep windowing per expert (musubi docs/wan.md): the
+    # low expert serves t<875 at inference, high serves t>=875. Training a
+    # single expert across the full range wastes gradient on timesteps it
+    # never serves — worse with shift>1, which skews sampling HIGH.
+    # preserve_distribution_shape keeps the shift distribution's shape
+    # inside the window instead of renormalizing it flat.
+    min_timestep: int | None = None
+    max_timestep: int | None = None
+    preserve_distribution_shape: bool = False
+    # [2026-06-10] "uniform" + frame_sample=2 trains on 2 evenly-spaced
+    # windows per clip. The previous "head" mode trained on ONLY the first
+    # target_frames window — for 2-5s clips with 33-frame windows that
+    # silently discarded ~35-45% of curated footage (verified in musubi
+    # image_video_dataset.py: head = one fixed window at cache time).
+    frame_extraction: str = "uniform"
+    frame_sample: int = 2
+    # [2026-06-10] Optional stills arm (official Wan recipe is 30-50 stills
+    # + 10-20 clips): images carry style/detail cheaply, videos carry
+    # motion. Emitted as a second [[datasets]] block.
+    image_dataset_dir: str | None = None
+    image_num_repeats: int = 1
+    # Per-run overrides of preset values (None = use preset). Lets a style
+    # run use dim=alpha=16 (community trend for Wan2.2 style; smaller
+    # overfit surface on small datasets) without mutating shared presets.
+    network_dim_override: int | None = None
+    network_alpha_override: int | None = None
+    discrete_flow_shift_override: float | None = None
 
 
 def gen_dataset_toml(cfg: TrainConfig, output_path: Path) -> Path:
@@ -63,14 +109,26 @@ def gen_dataset_toml(cfg: TrainConfig, output_path: Path) -> Path:
     dataset_block = {
         "resolution": [res_w, res_h],
         "target_frames": [cfg.target_frames],
-        "frame_extraction": "head",
+        "frame_extraction": cfg.frame_extraction,
         "video_directory": cfg.dataset_dir,
         "caption_extension": ".txt",
-        "fps": 16,
         "max_frames": cfg.target_frames,
         "batch_size": cfg.preset.batch_size,
         "num_repeats": cfg.num_repeats,
     }
+    if cfg.frame_extraction == "uniform":
+        dataset_block["frame_sample"] = cfg.frame_sample
+    if cfg.source_fps:
+        dataset_block["source_fps"] = float(cfg.source_fps)
+    datasets = [dataset_block]
+    if cfg.image_dataset_dir:
+        datasets.append({
+            "resolution": [res_w, res_h],
+            "image_directory": cfg.image_dataset_dir,
+            "caption_extension": ".txt",
+            "batch_size": cfg.preset.batch_size,
+            "num_repeats": cfg.image_num_repeats,
+        })
     general_block = {
         "caption_extension": ".txt",
         "batch_size": cfg.preset.batch_size,
@@ -79,7 +137,7 @@ def gen_dataset_toml(cfg: TrainConfig, output_path: Path) -> Path:
         general_block["enable_bucket"] = True
     toml_dict = {
         "general": general_block,
-        "datasets": [dataset_block],
+        "datasets": datasets,
     }
     output_path.write_text(toml.dumps(toml_dict))
     return output_path
@@ -103,6 +161,23 @@ def gen_cache_commands(cfg: TrainConfig, dataset_toml: Path) -> list[list[str]]:
         "python", str(MUSUBI_ROOT / "src" / "musubi_tuner" / "wan_cache_latents.py"),
         "--dataset_config", str(dataset_toml),
         "--vae", cfg.vae_path,
+        # [2026-06-13] Incremental re-cache. VAE-encoding video is the expensive
+        # half of caching (measured: 114 windows of 33f@720x544); a re-cache
+        # after ADDING clips otherwise re-encodes the whole set. --skip_existing
+        # keys on the latent cache filename, which encodes resolution+frames
+        # (...-033_0720x0544_wan.safetensors) and depends ONLY on the clip
+        # pixels -- independent of captions -- so skipping an existing latent is
+        # safe for every common edit (add/remove clips, edit captions, change
+        # res -> new filename -> re-encoded). Validated non-destructive: a
+        # skip_existing pass over a fully-cached set re-encoded nothing
+        # (sizes-hash + mtimes identical). The one edge it does NOT catch is an
+        # in-place pixel swap that keeps the same filename AND dims (rare; the
+        # autosplit pipeline emits unique names) -- delete that clip's cache to
+        # force a redo. NOTE: deliberately NOT applied to the T5 text cache
+        # above, which keys on clip name not caption content and would serve a
+        # STALE embedding after a caption edit (captions are what users iterate;
+        # T5 over short captions at batch 16 is cheap anyway).
+        "--skip_existing",
     ]
     return [t5_cmd, vae_cmd]
 
@@ -130,14 +205,15 @@ def gen_train_command(cfg: TrainConfig, output_dir: Path, dataset_toml: Path) ->
         f"--blocks_to_swap", str(p.blocks_to_swap),
         # Network
         "--network_module", "networks.lora_wan",
-        "--network_dim", str(p.network_dim),
-        "--network_alpha", str(p.network_alpha),
+        "--network_dim", str(cfg.network_dim_override or p.network_dim),
+        "--network_alpha", str(cfg.network_alpha_override or p.network_alpha),
         # Optimizer
         "--optimizer_type", p.optimizer,
         "--learning_rate", str(p.learning_rate),
         # Timesteps
         "--timestep_sampling", p.timestep_sampling,
-        "--discrete_flow_shift", str(p.discrete_flow_shift),
+        "--discrete_flow_shift",
+        str(cfg.discrete_flow_shift_override or p.discrete_flow_shift),
         # Training duration
         "--max_train_epochs", str(cfg.max_train_epochs),
         "--save_every_n_epochs", str(cfg.save_every_n_epochs),
@@ -157,6 +233,14 @@ def gen_train_command(cfg: TrainConfig, output_dir: Path, dataset_toml: Path) ->
         cmd.append("--gradient_checkpointing_cpu_offload")
     if cfg.dit_high_path:
         cmd += ["--dit_high_noise", cfg.dit_high_path, "--timestep_boundary", "0.875"]
+    # Timestep windowing for single-expert runs (musubi docs/wan.md:
+    # low expert 0-875, high expert 875-1000).
+    if cfg.min_timestep is not None:
+        cmd += ["--min_timestep", str(cfg.min_timestep)]
+    if cfg.max_timestep is not None:
+        cmd += ["--max_timestep", str(cfg.max_timestep)]
+    if cfg.preserve_distribution_shape:
+        cmd.append("--preserve_distribution_shape")
     # T4.A: resume-from-state
     if cfg.resume_state:
         cmd += ["--resume", cfg.resume_state, "--save_state"]
@@ -169,42 +253,91 @@ def gen_train_command(cfg: TrainConfig, output_dir: Path, dataset_toml: Path) ->
         cmd += ["--max_grad_norm", str(cfg.max_grad_norm)]
     if cfg.weight_decay is not None:
         cmd += ["--weight_decay", str(cfg.weight_decay)]
-    if cfg.sample_every_n_steps and cfg.sample_prompts:
+    if cfg.sample_prompts and (cfg.sample_every_n_epochs or cfg.sample_every_n_steps):
         sample_file = output_dir / "sample_prompts.txt"
         sample_file.write_text("\n".join(cfg.sample_prompts))
-        cmd += [
-            "--sample_every_n_steps", str(cfg.sample_every_n_steps),
-            "--sample_prompts", str(sample_file),
-        ]
+        # --sample_at_first renders before step 1: validates the sampling
+        # path immediately and gives the no-LoRA baseline to compare
+        # epoch renders against. Both flags verified in musubi's
+        # training/parser_common.py.
+        cmd += ["--sample_prompts", str(sample_file), "--sample_at_first"]
+        if cfg.sample_every_n_epochs:
+            cmd += ["--sample_every_n_epochs", str(cfg.sample_every_n_epochs)]
+        if cfg.sample_every_n_steps:
+            cmd += ["--sample_every_n_steps", str(cfg.sample_every_n_steps)]
     cmd += p.extra_args
     return cmd
 
 
+def _venv_bin_dir(venv_python: str) -> Path:
+    """Cross-platform venv binary directory: Scripts/ on Windows, bin/ on Unix."""
+    p = Path(venv_python).resolve()
+    # Whichever parent exists is the right one
+    if (p.parent.name.lower() == "scripts") or sys.platform == "win32":
+        return p.parent  # already Scripts/ on Windows or bin/ on Unix
+    return p.parent
+
+
 def gen_launch_script(cmd: list[str], output_dir: Path, venv_python: str) -> Path:
-    """Write a shell script that activates the venv + runs training (Flux-Gym pattern)."""
-    venv_dir = Path(venv_python).resolve().parent.parent
-    script_path = output_dir / "train.sh"
-    # cmd[0] is 'accelerate'; resolve it from the venv
-    cmd_str = " \\\n    ".join(
-        [str(venv_dir / "bin" / "accelerate")] + cmd[1:]
-    )
-    script_path.write_text(
-        "#!/bin/bash\n"
-        f"# BASI WAN K3N0B1 generated training script for: {output_dir.name}\n"
-        "set -e\n"
-        f"cd {MUSUBI_ROOT}\n"
-        f"source {venv_dir}/bin/activate\n"
-        "exec " + cmd_str + "\n"
-    )
-    script_path.chmod(0o755)
+    """Write a generated launcher that runs accelerate on the train script.
+
+    Cross-platform [2026-06-09]:
+      - Windows: writes `train.bat` that invokes accelerate.exe directly with
+        full paths (no activate.bat needed — avoids cmd nesting quirks).
+      - Unix:    writes `train.sh` (original Flux-Gym pattern, kept verbatim
+        for Linux/macOS users).
+    """
+    bin_dir = _venv_bin_dir(venv_python)
+    is_win = sys.platform == "win32"
+    if is_win:
+        accelerate = bin_dir / "accelerate.exe"
+        script_path = output_dir / "train.bat"
+        # cmd format on Windows: ^ continuation, no `exec`, no activate.
+        # Escape any path with spaces by quoting.
+        parts = [f'"{accelerate}"'] + [str(x) for x in cmd[1:]]
+        cmd_str = " ^\n    ".join(parts)
+        # PYTHONUTF8=1: musubi prints bilingual (Japanese) log messages;
+        # the Windows console default cp1252 can't encode them and the
+        # trainer DIES on a print() at optimizer setup (caught live
+        # 2026-06-10: UnicodeEncodeError in accelerate.state.print).
+        script_path.write_text(
+            "@echo off\r\n"
+            f"REM BASI WAN K3N0B1 generated training script for: {output_dir.name}\r\n"
+            "set PYTHONUTF8=1\r\n"
+            "set PYTHONIOENCODING=utf-8\r\n"
+            f"cd /d \"{MUSUBI_ROOT}\"\r\n"
+            f"{cmd_str}\r\n",
+            encoding="utf-8",
+        )
+    else:
+        accelerate = bin_dir / "accelerate"
+        venv_dir = bin_dir.parent
+        script_path = output_dir / "train.sh"
+        cmd_str = " \\\n    ".join([str(accelerate)] + cmd[1:])
+        script_path.write_text(
+            "#!/bin/bash\n"
+            f"# BASI WAN K3N0B1 generated training script for: {output_dir.name}\n"
+            "set -e\n"
+            f"cd {MUSUBI_ROOT}\n"
+            f"source {venv_dir}/bin/activate\n"
+            "exec " + cmd_str + "\n"
+        )
+        script_path.chmod(0o755)
     return script_path
 
 
 def prepare_training_run(cfg: TrainConfig, venv_python: str | None = None) -> dict:
-    """One-shot: create output dir, write TOML + cache scripts + train script."""
-    venv_python = venv_python or os.environ.get("BASI_VENV_PYTHON",
-                                                "/home/ryot/venvs/basi/bin/python")
-    venv_dir = Path(venv_python).resolve().parent.parent
+    """One-shot: create output dir, write TOML + cache scripts + train script.
+
+    Cross-platform [2026-06-09]: emits .bat on Windows, .sh on Unix.
+    Default venv_python is platform-aware (Scripts/ on Windows, bin/ on Unix)
+    and uses sys.executable as the fallback so the BASI_VENV_PYTHON env var
+    can override on dev machines.
+    """
+    if venv_python is None:
+        venv_python = os.environ.get("BASI_VENV_PYTHON", sys.executable)
+    is_win = sys.platform == "win32"
+    bin_dir = _venv_bin_dir(venv_python)
     output_dir = OUTPUTS_ROOT / cfg.lora_name
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset_toml = gen_dataset_toml(cfg, output_dir / "dataset.toml")
@@ -214,13 +347,31 @@ def prepare_training_run(cfg: TrainConfig, venv_python: str | None = None) -> di
     # Cache precompute (T5 + VAE) — must run BEFORE training. Wrapped into one
     # shell script for one-click prep from the UI.
     cache_cmds = gen_cache_commands(cfg, dataset_toml)
-    cache_script_path = output_dir / "cache.sh"
-    cache_lines = ["#!/bin/bash", f"# BASI WAN K3N0B1 cache precompute for: {cfg.lora_name}",
-                   "set -e", f"cd {MUSUBI_ROOT}", f"source {venv_dir}/bin/activate"]
-    for c in cache_cmds:
-        cache_lines.append(" \\\n    ".join([str(venv_dir / "bin" / "python")] + c[1:]))
-    cache_script_path.write_text("\n".join(cache_lines) + "\n")
-    cache_script_path.chmod(0o755)
+    if is_win:
+        py_exe = bin_dir / "python.exe"
+        cache_script_path = output_dir / "cache.bat"
+        lines = ["@echo off",
+                 f"REM BASI WAN K3N0B1 cache precompute for: {cfg.lora_name}",
+                 "set PYTHONUTF8=1",          # musubi's bilingual prints vs cp1252
+                 "set PYTHONIOENCODING=utf-8",
+                 f"cd /d \"{MUSUBI_ROOT}\""]
+        for c in cache_cmds:
+            parts = [f'"{py_exe}"'] + [str(x) for x in c[1:]]
+            lines.append(" ^\n    ".join(parts))
+            # Abort-on-first-failure: cmd has no `set -e`; check ERRORLEVEL.
+            lines.append("if errorlevel 1 exit /b 1")
+        cache_script_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    else:
+        venv_dir = bin_dir.parent
+        cache_script_path = output_dir / "cache.sh"
+        lines = ["#!/bin/bash",
+                 f"# BASI WAN K3N0B1 cache precompute for: {cfg.lora_name}",
+                 "set -e", f"cd {MUSUBI_ROOT}",
+                 f"source {venv_dir}/bin/activate"]
+        for c in cache_cmds:
+            lines.append(" \\\n    ".join([str(bin_dir / "python")] + c[1:]))
+        cache_script_path.write_text("\n".join(lines) + "\n")
+        cache_script_path.chmod(0o755)
 
     return {
         "output_dir": str(output_dir),

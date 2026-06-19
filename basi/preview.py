@@ -22,18 +22,24 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 # Defaults aligned with Faster-Wan2.2's Lightning recipe (FP8 + 4 steps, no CFG).
 # Override via env vars for Pinokio installs or alternate checkpoint layouts.
-DEFAULT_BASIWAN_ROOT = os.environ.get(
-    "BASIWAN_ROOT", "/mnt/d/Ai/transformers/work/BASIWAN")
+# [2026-06-11 #381] Portable defaults: repo-relative, not any absolute dev
+# path. preview.py is basi/preview.py → repo root is one parent up.
+# checkpoints/ is where install.js downloads weights.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_CKPT_BASE = os.environ.get("BASIWAN_CKPT_DIR", str(_REPO_ROOT / "checkpoints"))
+DEFAULT_BASIWAN_ROOT = os.environ.get("BASIWAN_ROOT", str(_REPO_ROOT))
 DEFAULT_CKPT_DIR = os.environ.get(
-    "BASI_CKPT_DIR", "/mnt/d/Ai/checkpoints/Wan2.2-T2V-A14B")
+    "BASI_CKPT_DIR", str(Path(_CKPT_BASE) / "Wan2.2-T2V-A14B"))
 DEFAULT_LIGHTNING_LORA_DIR = os.environ.get(
     "BASI_LIGHTNING_LORA_DIR",
-    "/mnt/d/Ai/checkpoints/Wan2.2-Lightning/Wan2.2-T2V-A14B-4steps-lora-250928")
+    str(Path(_CKPT_BASE) / "Wan2.2-Lightning"
+        / "Wan2.2-T2V-A14B-4steps-lora-250928"))
 
 
 @dataclass
@@ -66,13 +72,14 @@ def generate_preview(spec: PreviewSpec,
         raise FileNotFoundError(f"LoRA checkpoint not found: {spec.lora_path}")
     if not Path(ckpt_dir).exists():
         raise FileNotFoundError(f"Base Wan2.2 ckpt dir not found: {ckpt_dir}")
-    fw_generate = Path(faster_wan_root) / "generate.py"
-    if not fw_generate.exists():
+    # [#356] The old Faster-Wan2.2 generate.py was dropped when the GGUF runner
+    # was vendored; preview now renders through the SAME validated path the Studio
+    # tab uses (Lightning+user-LoRA combo -> tools/run_one_video_gguf.py -> pt->mp4).
+    _runner = Path(faster_wan_root) / "tools" / "run_one_video_gguf.py"
+    if not _runner.exists():
         raise FileNotFoundError(
-            f"Faster-Wan2.2 generate.py not found at {fw_generate}. "
-            f"Set BASIWAN_ROOT or clone Faster-Wan2.2 to {faster_wan_root}. "
-            f"Preview is optional — training will work without it."
-        )
+            f"GGUF runner not found at {_runner}. Set BASIWAN_ROOT to the app root. "
+            f"Preview is optional — training will work without it.")
 
     # Default to the current interpreter (works inside Pinokio's single-venv
     # install). Override via BASIWAN_VENV_PYTHON if the user maintains a
@@ -85,62 +92,83 @@ def generate_preview(spec: PreviewSpec,
     out = Path(spec.output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    # Resolve the T2V GGUF pair (env override -> HF-snapshot/flat glob under the
+    # checkpoint dir) + VAE + base from the T2V ckpt dir.
+    import glob as _glob
+    from basi import combo as _combo
+
+    def _resolve_gguf(env_key, which, fname):
+        v = os.environ.get(env_key)
+        if v and Path(v).exists():
+            return v
+        gd = Path(_CKPT_BASE) / "gguf"
+        for pat in (str(gd / "models--*" / "snapshots" / "*" / which / "*Q4_K_M.gguf"),
+                    str(gd / "*" / which / "*Q4_K_M.gguf"),
+                    str(gd / which / fname)):
+            hits = sorted(_glob.glob(pat))
+            if hits:
+                return hits[0]
+        raise FileNotFoundError(
+            f"T2V GGUF {which} not found under {gd}. Download "
+            f"QuantStack/Wan2.2-T2V-A14B-GGUF into checkpoints/gguf, or set {env_key}.")
+
+    gguf_high = _resolve_gguf("BASIWAN_GGUF_HIGH", "HighNoise",
+                              "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf")
+    gguf_low = _resolve_gguf("BASIWAN_GGUF_LOW", "LowNoise",
+                             "Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf")
+    vae = Path(ckpt_dir) / "Wan2.1_VAE.pth"
+
+    # Build the Lightning + user-LoRA combo (the validated #391 mechanism). The
+    # user's single-file LoRA maps to the expert(s) it was trained for; the runner
+    # loads the combo dir's {high,low}_noise_model.safetensors via --lora-dir.
+    _u = str(spec.lora_path)
+    _e = spec.lora_expert
+    user_high = _u if _e in ("high", "both") else None
+    user_low = _u if _e in ("low", "both") else None
+    combo_dir = Path(tempfile.mkdtemp(prefix="basiwan_preview_combo_"))
+    _combo.build_combo(lightning_lora_dir, user_high, user_low, combo_dir,
+                       user_strength=float(spec.lora_strength), lightning_strength=1.0)
+
+    w, h = (int(s) for s in spec.size.replace("x", "*").split("*"))
+    pt_out = out.with_suffix(".pt")
+    meta_out = out.with_suffix(".preview.json")
+
     env = os.environ.copy()
-    # Lightning LoRA auto-applied via P19 env var
-    env["BASIWAN_LORA_DIR"] = lightning_lora_dir
-    # User's trained LoRA stacked on top via P24
-    env["BASIWAN_USER_LORA"] = spec.lora_path
-    env["BASIWAN_USER_LORA_EXPERT"] = spec.lora_expert
-    env["BASIWAN_USER_LORA_STRENGTH"] = str(spec.lora_strength)
-    # P26: TAEHV tiny-VAE for 4-6× faster decode. Preview is convergence-monitoring,
-    # not final output — the slight quality cost is the right tradeoff.
-    env.setdefault("BASIWAN_TAEHV_VAE", "1")
-    # P25 CUDA Graphs at Lightning shape: kernel-launch amortization. Default on
-    # for preview since shape is fixed per render. Set BASIWAN_CUDA_GRAPHS=0
-    # in the caller env to disable if it conflicts with anything.
-    env.setdefault("BASIWAN_CUDA_GRAPHS", "1")
-    # P34 lower-VRAM support: opt the preview into the same shape-aware
-    # block-swap auto-tune the inference fork ships. The runner picks N at
-    # pipe-build time from measured peak_alloc + free_vram. Explicit int
-    # overrides still win (so cards that want a specific N can pin it via
-    # the caller env). See Faster-Wan2.2/docs/lower_vram_support.md.
-    env.setdefault("BASIWAN_BLOCK_SWAP_N", "auto")
-    # bf16-autocast norm fix — universal benefit; only matters at high seq
-    # but costs nothing at low seq. Lets p720_81f-shaped previews fit even
-    # on 24GB cards, and prevents fp32-promoted layer_norm transients on
-    # smaller cards. Mirrors the env used by run_one_video.py --stacked.
-    env.setdefault("BASIWAN_RMS_BF16", "1")
-    env.setdefault("BASIWAN_LN_BF16", "1")
-    # Quantization scheme: the inference path picks this from the prequant
-    # dir, but we surface the recommendation here so the UI / installer
-    # can pre-select the right prequant for the detected GPU (FP8 vs Int8
-    # vs GGUF Q4). The runner will warn on a scheme/SM mismatch.
-    try:
-        from basi.presets import detect_capability, recommend_inference_scheme
-        cap = detect_capability()
-        env.setdefault("BASI_RECOMMENDED_SCHEME", recommend_inference_scheme(cap))
-        env.setdefault("BASI_GPU_NAME", cap.name)
-    except Exception as e:  # never block preview on the recommender
-        print(f"[preview] capability probe failed (non-fatal): {e}")
+    # The runner reads these ship-recipe perf flags; the old generate.py-specific
+    # BASIWAN_USER_LORA*/LORA_DIR are replaced by the combo dir, so clear them.
+    env.setdefault("BASIWAN_V2", "1")
+    env.setdefault("BASIWAN_USE_PACK_CACHE", "1")
+    env.setdefault("BASIWAN_NO_POOL", "1")
+    env.setdefault("BASIWAN_VAE_BF16", "1")
+    env.setdefault("BASIWAN_TAEHV_VAE", "1")   # preview = convergence monitor
+    for _k in ("BASIWAN_USER_LORA", "BASIWAN_USER_LORA_EXPERT",
+               "BASIWAN_USER_LORA_STRENGTH", "BASIWAN_LORA_DIR"):
+        env.pop(_k, None)
 
     cmd = [
-        venv_python,
-        str(Path(faster_wan_root) / "generate.py"),
-        "--task", "t2v-A14B",
-        "--size", spec.size,
-        "--frame_num", str(spec.frame_num),
-        "--ckpt_dir", ckpt_dir,
+        venv_python, "-u", str(_runner),
+        "--model-type", "t2v",
+        "--gguf-high", str(gguf_high), "--gguf-low", str(gguf_low),
+        "--vae", str(vae), "--base-dir", str(ckpt_dir),
+        "--lora-dir", str(combo_dir), "--lora-mode", "forward",
         "--prompt", spec.prompt,
-        "--save_file", str(out),
-        "--sample_steps", str(spec.sample_steps),
-        "--sample_guide_scale", str(spec.sample_guide_scale),
-        "--base_seed", str(spec.base_seed),
-        "--offload_model", "True",
-        "--convert_model_dtype",
+        "--width", str(w), "--height", str(h), "--frames", str(spec.frame_num),
+        "--steps", str(spec.sample_steps), "--guide", str(spec.sample_guide_scale),
+        "--out", str(pt_out), "--meta", str(meta_out),
     ]
-
-    print(f"[preview] {spec.size} × {spec.frame_num}f, {spec.sample_steps} steps → {out.name}")
-    subprocess.run(cmd, env=env, cwd=faster_wan_root, check=True, timeout=timeout_sec)
+    print(f"[preview] {spec.size} x {spec.frame_num}f, {spec.sample_steps} steps "
+          f"(Lightning+user@{spec.lora_strength} on {_e}) -> {out.name}", flush=True)
+    try:
+        subprocess.run(cmd, env=env, cwd=str(faster_wan_root), check=True,
+                       timeout=timeout_sec)
+        # .pt -> .mp4 (fps=16, libx264) via the vendored converter.
+        subprocess.run([venv_python, str(Path(faster_wan_root) / "tools" / "pt_to_mp4.py"),
+                        str(pt_out), str(out)], check=True, timeout=180)
+    finally:
+        import shutil as _sh
+        _sh.rmtree(combo_dir, ignore_errors=True)
+    if not out.exists():
+        raise RuntimeError(f"preview render produced no .mp4 at {out}")
     return out
 
 
