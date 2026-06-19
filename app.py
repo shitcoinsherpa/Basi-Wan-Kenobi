@@ -1190,6 +1190,17 @@ def build_ui():
                         mova_steps = gr.Slider(20, 50, value=50, step=5,
                             label="Denoise steps",
                             info="MOVA recipe = 50; fewer underdenoises.")
+                    # Prompt help + LLM "magic rewrite": MOVA needs a specific shape
+                    # (trigger + visual sentence + verbatim spoken-words clause). Type a rough
+                    # idea + your LoRA's trigger, click Format, and Qwen rewrites it correctly.
+                    from basi.caption import MOVA_PROMPT_GUIDE as _MOVA_GUIDE
+                    gr.Markdown(f"**Prompt format** — {_MOVA_GUIDE}")
+                    with gr.Row():
+                        mova_trigger = gr.Textbox(
+                            label="Trigger word", value="", scale=2,
+                            placeholder="your LoRA's word, e.g. moralorel")
+                        mova_rewrite_btn = gr.Button(
+                            "✨ Format prompt for MOVA", variant="secondary", scale=2)
                     mova_btn = gr.Button(
                         "Generate A/V", variant="primary", interactive=_mova_ready)
                     mova_status = gr.Markdown()
@@ -2210,6 +2221,11 @@ def build_ui():
                         yield None, ("### MOVA not installed\n\nRe-run Install — it provisions "
                                      "the env_mova venv and the MOVA-360p weights.")
                         return
+                    # Free the GGUF Studio (Wan) worker first — it holds ~9GB VRAM, and MOVA's
+                    # group-offload onload needs ~12GB free or it CUDA-OOMs during model load.
+                    # MOVA runs in its own venv/process, so the Wan worker isn't needed concurrently.
+                    yield None, "🧹 Freeing GPU (closing the Wan video worker) for MOVA…"
+                    _shutdown_worker_if_idle()
                     lora_dir = dict(_mi.list_mova_loras()).get(lora_label, "") or None
                     out_dir = WORKSPACES / "_studio" / "mova"
                     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2240,6 +2256,24 @@ def build_ui():
                     inputs=[studio_prompt, mova_lora, mova_frames, mova_steps],
                     outputs=[studio_video, mova_status],
                     api_name="generate_mova",
+                )
+
+                # [MOVA] LLM 'magic rewrite': reshape the user's rough idea into the correct
+                # MOVA prompt format (trigger + visual sentence + verbatim spoken-words clause)
+                # using the same Qwen VLM as Suggest/caption. Rewrites the shared prompt box.
+                def _mova_rewrite(prompt, trigger, progress=gr.Progress()):
+                    if not (prompt or "").strip():
+                        return gr.update(), "Type a rough idea first, then format it."
+                    try:
+                        progress(0.3, desc="formatting prompt (Qwen)")
+                        from basi.caption import mova_format_prompt
+                        out = mova_format_prompt(prompt, trigger=trigger)
+                        return out, "✨ Formatted for MOVA — review, then Generate A/V."
+                    except Exception as e:
+                        return gr.update(), f"Rewrite failed: {type(e).__name__}: {e}"
+                mova_rewrite_btn.click(
+                    _mova_rewrite, inputs=[studio_prompt, mova_trigger],
+                    outputs=[studio_prompt, mova_status],
                 )
 
                 continue_gallery.select(_pick_tail, outputs=[continue_pick])
@@ -2456,6 +2490,16 @@ def build_ui():
                                 "without the trigger to detect identity bleed."
                             ),
                         )
+                        # MOVA A/V sample prompts need the trigger + visual + verbatim
+                        # spoken-words shape. One-click LLM rewrite (uses the trigger field
+                        # above). Only meaningful for MOVA A/V training; harmless otherwise.
+                        with gr.Row():
+                            gym_mova_rewrite_btn = gr.Button(
+                                "✨ Format for MOVA A/V", variant="secondary", scale=2)
+                            gym_mova_rewrite_status = gr.Markdown(scale=3)
+                        gym_mova_rewrite_btn.click(
+                            _mova_rewrite, inputs=[sample_prompt, trigger_word],
+                            outputs=[sample_prompt, gym_mova_rewrite_status])
 
                     # COLUMN 2: Dataset
                     with gr.Column():

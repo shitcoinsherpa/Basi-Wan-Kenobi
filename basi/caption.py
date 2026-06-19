@@ -134,6 +134,60 @@ def _unload(model):
         torch.cuda.empty_cache()
 
 
+# --- MOVA prompt format + LLM "magic rewrite" -------------------------------
+# The one-line note shown in the UI (Studio MOVA mode + Gym MOVA samples).
+MOVA_PROMPT_GUIDE = (
+    'MOVA prompt format: `<trigger>, <one visual sentence — subject + action + '
+    'shot/setting>.` then, if the subject speaks, `He says, in English, "<exact '
+    'words>".` Keep dialogue verbatim in quotes (MOVA conditions speech on the literal '
+    'words); the trigger token carries the trained style, so skip style adjectives.'
+)
+
+_MOVA_REWRITE_SYS = (
+    "You rewrite a user's idea into ONE MOVA audio+video generation prompt. Rules:\n"
+    '1. Begin with the trigger token exactly: "{trigger}, " (with the comma). If the trigger '
+    "is <none>, start directly with the subject.\n"
+    "2. Then one concise visual sentence: the subject, what they do, and the shot/setting "
+    "(e.g. medium shot, kitchen interior), ENDING WITH A PERIOD. Do NOT add art-style "
+    "adjectives — the trigger carries the trained style.\n"
+    '3. If the subject speaks, append exactly: He says, in English, "<the spoken words>". '
+    "(Use She/They as appropriate.) Copy any words the user already put in quotes VERBATIM — "
+    "never paraphrase, translate, or alter them. If the user gave no speech, omit this clause.\n"
+    "4. Output ONLY the final prompt on one line — no preamble, no surrounding quotes, no notes."
+)
+
+
+def mova_format_prompt(user_text, trigger=None, model_id=None, max_new_tokens=160):
+    """LLM 'magic rewrite': turn a rough idea into a correctly-formatted MOVA prompt
+    (trigger + one visual sentence + a verbatim `He says, in English, "..."` clause). Uses the
+    same Qwen3-VL the captioner / Suggest-prompt features use, text-only. Loads then unloads the
+    model. Returns the rewritten one-line prompt; raises on failure (caller surfaces it)."""
+    import torch
+    mid = model_id or MODEL_TIERS[12]  # Qwen3-VL-4B — small/fast, text-only here
+    sys_prompt = _MOVA_REWRITE_SYS.format(trigger=((trigger or "").strip() or "<none>"))
+    model, processor = _load_vlm(mid)
+    try:
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": sys_prompt}]},
+            {"role": "user", "content": [{"type": "text", "text": (user_text or "").strip()}]},
+        ]
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[text], return_tensors="pt").to("cuda")
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        trimmed = out[:, inputs.input_ids.shape[1]:]
+        result = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+        result = result.strip().strip("`").strip()
+        if len(result) > 1 and result[0] == '"' and result[-1] == '"' and result.count('"') == 2:
+            result = result[1:-1].strip()   # unwrap if the whole line got quoted
+        tg = (trigger or "").strip()
+        if tg and not result.lower().startswith(tg.lower()):
+            result = f"{tg}, {result}"       # enforce trigger prefix if the model dropped it
+        return result
+    finally:
+        _unload(model)
+
+
 def caption_video(model, processor, video_path: str, trigger_word: str | None = None,
                   max_new_tokens: int = 300,
                   prompt_template: str | None = None) -> str:

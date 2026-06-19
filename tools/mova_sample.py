@@ -59,14 +59,17 @@ def main():
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
 
-    # single-rank process group (MOVA __call__ uses dist.get_rank() for the tqdm gate). NCCL is
-    # Linux-only; on Windows use gloo (single-GPU inference does no NCCL collectives — cp_mesh=None
-    # means the _sp_* paths are never hit, only get_rank()). gloo is cross-platform for a 1-rank PG.
+    # Single-GPU: MOVA's pipeline only calls dist.get_rank()/get_world_size() (the tqdm gate)
+    # when cp_mesh=None — the all_gather/_sp_* collective paths are multi-GPU only and never run
+    # here. So instead of creating a real process group, monkeypatch the query fns to single-rank.
+    # Creating a gloo store on Windows emits a noisy but HARMLESS hostname-probe warning
+    # ("...kubernetes.docker.internal:29560 ... not valid in its context") and NCCL is Linux-only;
+    # skipping the PG entirely means no socket and no warning, and is fully sufficient for inference.
     if not dist.is_initialized():
-        os.environ.setdefault("MASTER_ADDR", "127.0.0.1"); os.environ.setdefault("MASTER_PORT", "29560")
-        os.environ.setdefault("RANK", "0"); os.environ.setdefault("WORLD_SIZE", "1")
-        _backend = "gloo" if os.name == "nt" else "nccl"
-        dist.init_process_group(backend=_backend, world_size=1, rank=0)
+        dist.is_initialized = lambda: True
+        dist.get_rank = lambda *a, **k: 0
+        dist.get_world_size = lambda *a, **k: 1
+        dist.barrier = lambda *a, **k: None
     torch.cuda.set_device(0)
 
     from mova.diffusion.pipelines import MOVA, MOVALoRA
