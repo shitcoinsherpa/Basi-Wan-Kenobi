@@ -5,7 +5,7 @@
 module.exports = {
   version: "3.7",
   title: "basiwan",
-  description: "[NVIDIA Only] Dead simple web UI for training Wan2.2 video LoRAs (From 12GB VRAM)",
+  description: "[NVIDIA Only] Wan2.2 video Studio (text/image-to-video, restyle, keyframe, talking-character S2V) + LoRA Gym + MOVA joint audio+video. From 12GB VRAM.",
   icon: "icon.png",
   menu: async (kernel, info) => {
     const installed = info.exists("env");
