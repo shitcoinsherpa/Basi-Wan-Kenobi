@@ -1177,6 +1177,21 @@ def build_ui():
                         + ("" if _mova_infer.mova_installed()
                            else "\n\n**MOVA not installed** — re-run Install (it provisions "
                                 "env_mova + the MOVA-360p weights)."))
+                    # MOVA has its OWN prompt box: the magic-rewrite writes the formatted
+                    # prompt back HERE (right where you click Format) so you can review/edit
+                    # it, instead of the shared T2V box higher up the page. Type a rough idea
+                    # + your LoRA's trigger, click Format, review, then Generate.
+                    from basi.caption import MOVA_PROMPT_GUIDE as _MOVA_GUIDE
+                    gr.Markdown(f"**Prompt format** — {_MOVA_GUIDE}")
+                    mova_prompt = gr.Textbox(
+                        label="Prompt", lines=2,
+                        placeholder='moralorel, a boy speaks, medium shot. He says, in English, "..."')
+                    with gr.Row():
+                        mova_trigger = gr.Textbox(
+                            label="Trigger word", value="", scale=2,
+                            placeholder="your LoRA's word, e.g. moralorel")
+                        mova_rewrite_btn = gr.Button(
+                            "✨ Format prompt for MOVA", variant="secondary", scale=2)
                     with gr.Row():
                         mova_lora = gr.Dropdown(
                             label="MOVA LoRA",
@@ -1190,17 +1205,6 @@ def build_ui():
                         mova_steps = gr.Slider(20, 50, value=50, step=5,
                             label="Denoise steps",
                             info="MOVA recipe = 50; fewer underdenoises.")
-                    # Prompt help + LLM "magic rewrite": MOVA needs a specific shape
-                    # (trigger + visual sentence + verbatim spoken-words clause). Type a rough
-                    # idea + your LoRA's trigger, click Format, and Qwen rewrites it correctly.
-                    from basi.caption import MOVA_PROMPT_GUIDE as _MOVA_GUIDE
-                    gr.Markdown(f"**Prompt format** — {_MOVA_GUIDE}")
-                    with gr.Row():
-                        mova_trigger = gr.Textbox(
-                            label="Trigger word", value="", scale=2,
-                            placeholder="your LoRA's word, e.g. moralorel")
-                        mova_rewrite_btn = gr.Button(
-                            "✨ Format prompt for MOVA", variant="secondary", scale=2)
                     mova_btn = gr.Button(
                         "Generate A/V", variant="primary", interactive=_mova_ready)
                     mova_status = gr.Markdown()
@@ -2253,7 +2257,7 @@ def build_ui():
                                      + "\n".join(last.splitlines()[-25:]) + "\n```")
                 mova_btn.click(
                     _mova_generate,
-                    inputs=[studio_prompt, mova_lora, mova_frames, mova_steps],
+                    inputs=[mova_prompt, mova_lora, mova_frames, mova_steps],
                     outputs=[studio_video, mova_status],
                     api_name="generate_mova",
                 )
@@ -2272,8 +2276,8 @@ def build_ui():
                     except Exception as e:
                         return gr.update(), f"Rewrite failed: {type(e).__name__}: {e}"
                 mova_rewrite_btn.click(
-                    _mova_rewrite, inputs=[studio_prompt, mova_trigger],
-                    outputs=[studio_prompt, mova_status],
+                    _mova_rewrite, inputs=[mova_prompt, mova_trigger],
+                    outputs=[mova_prompt, mova_status],
                 )
 
                 continue_gallery.select(_pick_tail, outputs=[continue_pick])
