@@ -964,7 +964,7 @@ def build_ui():
                     value="Text → Video", label="Mode",
                     info="What to make. The extra inputs for Restyle / Continue / "
                          "Keyframe / Talking-character / Joint A/V appear below when selected.")
-                with gr.Accordion("Advanced", open=False):
+                with gr.Accordion("Advanced", open=False) as adv_acc:
                     # [S10] System-aware choices: filter resolution + frames to what the
                     # detected card's inference tier can run, so a smaller card never
                     # SEES (let alone picks) a 720p/long config that OOMs. 12/8GB tiers
@@ -1004,9 +1004,10 @@ def build_ui():
                         )
                         studio_steps = gr.Slider(
                             label="Steps", minimum=4, maximum=20, step=1, value=STUDIO["t2v_steps"],
-                            info="Denoise passes. The Studio path runs the Lightning 4-step "
-                                 "distilled LoRA, so 4 is the tuned fast default; higher is "
-                                 "slower and only helps when paired with higher Guidance.",
+                            info="Denoise passes — applies to Text→Video and Continue (Lightning "
+                                 "4-step distilled, so 4 is the tuned fast default). Restyle, "
+                                 "Keyframe and Talking-character run their own fixed recipe (8 / "
+                                 "50 / 40 steps) and ignore this slider.",
                         )
                     with gr.Row():
                         studio_seed = gr.Number(label="Seed", value=STUDIO["seed"], precision=0,
@@ -1014,10 +1015,11 @@ def build_ui():
                         studio_guide = gr.Slider(label="Guidance",
                                                  minimum=1.0, maximum=10.0,
                                                  step=0.1, value=STUDIO["t2v_guidance"],
-                                                 info="Prompt adherence (CFG). Lightning is "
-                                                 "tuned to run CFG-free, so ~1.0 is the fast "
-                                                 "default; raising it (with more Steps) pushes "
-                                                 "harder on the prompt but is much slower.")
+                                                 info="Prompt adherence (CFG) for Text→Video / "
+                                                 "Continue. Lightning runs CFG-free, so ~1.0 is "
+                                                 "the fast default. Keyframe and Talking-character "
+                                                 "use their own guidance (5.0 / 4.5) and ignore "
+                                                 "this.")
                     with gr.Row():
                         with gr.Row():
                             studio_lora = gr.Dropdown(
@@ -1806,7 +1808,7 @@ def build_ui():
                             "prompt": prompt.strip(),
                             "width": width, "height": height,
                             "frames": int(frames), "steps": int(steps),
-                            "guide": float(guide),
+                            "guide": float(guide), "seed": int(seed),
                             # Strength policy is decided in _plan_user_lora:
                             # T2V combo bakes+pins 1.0; VACE user-only (un-pinned)
                             # and plain T2V honor the slider.
@@ -2141,6 +2143,12 @@ def build_ui():
                 # T2V keeps the top-level Generate button; each other mode uses its
                 # own button inside its (now-revealed) accordion.
                 def _select_studio_mode(mode):
+                    # The shared top prompt box is only meaningful for text-driven Wan modes.
+                    # S2V is audio-driven (no text prompt); MOVA has its OWN prompt box — so hide
+                    # the shared prompt for both. The Advanced accordion (resolution/frames/steps/
+                    # guide/seed/Wan-LoRA) is used by every Wan mode but NONE of it applies to MOVA
+                    # (MOVA has its own res/frames/steps/LoRA) — hide it for MOVA only.
+                    _txt = mode in ("Text → Video", "Restyle", "Continue", "Keyframe")
                     return [gr.update(visible=mode == "Restyle"),
                             gr.update(visible=mode == "Continue"),
                             gr.update(visible=mode == "Keyframe"),
@@ -2148,11 +2156,13 @@ def build_ui():
                             gr.update(visible=mode == "Joint A/V (MOVA)"),
                             # the shared Generate button drives Text→Video only; Restyle /
                             # Continue / Keyframe / S2V / MOVA each have their own button.
-                            gr.update(visible=mode == "Text → Video")]
+                            gr.update(visible=mode == "Text → Video"),
+                            gr.update(visible=_txt),                        # studio_prompt
+                            gr.update(visible=mode != "Joint A/V (MOVA)")]  # Advanced accordion
                 studio_mode.change(
                     _select_studio_mode, inputs=[studio_mode],
                     outputs=[restyle_acc, continue_acc, kf_acc, s2v_acc, mova_acc,
-                             studio_generate_btn])
+                             studio_generate_btn, studio_prompt, adv_acc])
 
                 studio_generate_btn.click(
                     _studio_generate,
@@ -2421,7 +2431,7 @@ def build_ui():
                             info="Leave empty for fresh training. Set --save_state on previous run to save state.",
                         )
                         # T4.H: advanced optimizer args (hidden by default).
-                        with gr.Accordion("Advanced optimizer", open=False):
+                        with gr.Accordion("Advanced optimizer", open=False) as adv_opt_acc:
                             # [2026-06-09] Defaults updated to match Wan2.2 LoRA
                             # research brief — all still user-editable. See
                             # memory/wan22_lora_training_brief_2026-06-09.md.
@@ -2614,9 +2624,10 @@ def build_ui():
                         sample_gallery = gr.Files(label="Samples (.mp4)", file_count="multiple")
                         sample_timer = gr.Timer(10.0)
 
-                        gr.Markdown("### Preview (Faster-Wan2.2 Lightning + FP8 + TAEHV)")
-                        gr.Markdown("~3-4 s at 832×480×17 frames. Trainer must be paused — single "
-                                    "4090 cannot run trainer + preview concurrently.")
+                        _wan_preview_hdr = gr.Markdown(
+                            "### Preview (Faster-Wan2.2 Lightning + FP8 + TAEHV)\n"
+                            "~3-4 s at 832×480×17 frames. Trainer must be paused — single "
+                            "4090 cannot run trainer + preview concurrently.")
                         with gr.Row():
                             preview_size = gr.Dropdown(["832*480", "480*832", "720*1280", "1280*720"],
                                                        value="832*480", label="Size",
@@ -2782,6 +2793,12 @@ def build_ui():
                 # _train_pipeline reads these -> what you see is what runs). MOVA has no
                 # high/low expert choice, so that field is hidden for it.
                 def _on_train_type(tt):
+                    # All the Wan/musubi-only controls below are IGNORED by the MOVA trainer
+                    # (gen_mova_train_command takes none of them), so hide them for MOVA and show
+                    # them for Wan — otherwise a MOVA user sees musubi schedulers, a musubi
+                    # --save_state resume box, a Wan step-sample slider, a Wan loss chart, and a
+                    # Faster-Wan2.2 preview that can't render an A/V LoRA. (mova_analytics replaces
+                    # the loss chart for MOVA.)
                     if "MOVA" in str(tt):
                         mp = auto_select_mova(detect_vram_gb())
                         pkey = next((k for k, v in MOVA_PRESETS.items() if v is mp),
@@ -2790,21 +2807,39 @@ def build_ui():
                                           label="MOVA preset (A/V, 240p NF4)"),
                                 gr.update(choices=_MOVA_RES_CHOICES, value="320x240",
                                           label="Resolution (MOVA 240p)"),
-                                gr.update(visible=False),
-                                gr.update(visible=True),    # mova_analytics_btn (md stays hidden until refreshed)
-                                # 81f@24fps = 3.4s is the proven MOVA len: the full spoken line fits
-                                # (shorter truncates dialogue -> inflated CER); preset caps to its max.
-                                gr.update(value=min(81, mp.max_target_frames)))
+                                gr.update(visible=False),   # expert_dd (Wan high/low)
+                                gr.update(visible=True),    # mova_analytics_btn
+                                # 81f@24fps = 3.4s is the proven MOVA len; widen the cap to the
+                                # preset's max (129 on 40G+), which the Wan-shaped 81 slider blocked.
+                                gr.update(value=min(81, mp.max_target_frames),
+                                          maximum=mp.max_target_frames),
+                                gr.update(visible=False),   # resume_state (musubi --save_state)
+                                gr.update(visible=False),   # sample_every (Wan step-sampling)
+                                gr.update(visible=False),   # adv_opt_acc (musubi optimizer)
+                                gr.update(visible=False),   # loss_chart (Wan log format)
+                                gr.update(visible=False),   # _wan_preview_hdr
+                                gr.update(visible=False),   # preview_btn
+                                gr.update(visible=False))   # preview_video
                     return (gr.update(choices=list(PRESETS.keys()), value=initial_preset,
                                       label="VRAM preset"),
                             gr.update(choices=_WAN_RES_CHOICES, value="832x480",
                                       label="Resolution (Wan2.2 supported buckets)"),
-                            gr.update(visible=True),
+                            gr.update(visible=True),        # expert_dd
                             gr.update(visible=False),       # hide MOVA analytics btn on the Wan path
-                            gr.update(value=GYM["frames"]))  # restore Wan default frames (33)
+                            gr.update(value=GYM["frames"], maximum=81),  # Wan default + cap
+                            gr.update(visible=True),        # resume_state
+                            gr.update(visible=True),        # sample_every
+                            gr.update(visible=True),        # adv_opt_acc
+                            gr.update(visible=True),        # loss_chart
+                            gr.update(visible=True),        # _wan_preview_hdr
+                            gr.update(visible=True),        # preview_btn
+                            gr.update(visible=True))        # preview_video
                 gym_train_type.change(_on_train_type, inputs=[gym_train_type],
                                       outputs=[preset_dd, resolution_choice, expert_dd,
-                                               mova_analytics_btn, target_frames])
+                                               mova_analytics_btn, target_frames,
+                                               resume_state, sample_every, adv_opt_acc,
+                                               loss_chart, _wan_preview_hdr, preview_btn,
+                                               preview_video])
 
                 # [MOVA] training analytics: parse outputs/<lora_name>/train.log -> convergence
                 # read-out. On demand (cheap; reads a text file). Shows the best epoch + the

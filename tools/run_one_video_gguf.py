@@ -169,7 +169,7 @@ _INITIAL_BASIWAN_VAE_TILING = os.environ.get("BASIWAN_VAE_TILING")
 os.environ.setdefault("BASIWAN_NO_VAE_COMPILE", "1")
 os.environ.setdefault("BASIWAN_NO_FP16_RECAST", "1")
 
-import gc, json, time  # noqa: E402
+import gc, json, time, random  # noqa: E402
 import torch  # noqa: E402
 import _basiwan_deep_profile as _dp  # noqa: E402  (no-op when env gate off)
 
@@ -1388,7 +1388,7 @@ def _do_one_generation_s2v(pipe, *, prompt, width, height, frames, out_pt, out_m
 
 
 def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
-                       steps, guide, out_pt, out_meta, clip_t=False,
+                       steps, guide, out_pt, out_meta, clip_t=False, seed=0,
                        lora_strength=None, image=None,
                        video=None, denoise_strength=1.0,
                        vace_depth=False, vace_context_scale=1.0,
@@ -1546,7 +1546,10 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
         guide = _vmod.VACE_DEPTH_RECIPE["guide_scale"]
         _vace_shift = _vmod.VACE_DEPTH_RECIPE["shift"]
 
-    torch.manual_seed(0)
+    # Seed: a >=0 value is reproducible; <0 (the UI's "-1 = random") draws a fresh seed per
+    # call so repeated clicks vary. (Previously hardcoded 0 -> every generation was identical.)
+    _seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
+    torch.manual_seed(_seed)
     _vp = _VramPeak().start()
     t0 = time.time()
     _shift = (_vace_shift if _vace_shift is not None
@@ -1559,7 +1562,7 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
     _offload = False if (vace_depth or vace_edit) else True
     video = pipe.generate(
         input_prompt=prompt, size=size,
-        frame_num=frames, sampling_steps=steps, seed=0,
+        frame_num=frames, sampling_steps=steps, seed=_seed,
         shift=_shift,
         guide_scale=(guide, guide), offload_model=_offload,
         img=_img, video=_vid_src, denoise_strength=float(denoise_strength),
@@ -1731,7 +1734,7 @@ def _serve_loop(pipe, size_configs):
                 pipe, size_configs,
                 prompt=a["prompt"], width=a["width"], height=a["height"],
                 frames=a["frames"], steps=a.get("steps", 4),
-                guide=a.get("guide", 1.0),
+                guide=a.get("guide", 1.0), seed=a.get("seed", 0),
                 out_pt=a["out"], out_meta=a["meta"],
                 clip_t=a.get("clip_t", False),
                 # [#391/#388] A Lightning+user combo bakes user strength in
