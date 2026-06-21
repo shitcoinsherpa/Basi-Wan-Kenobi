@@ -145,11 +145,12 @@ _MOVA_REWRITE_SYS = (
     "(e.g. medium shot, kitchen interior), ENDING WITH A PERIOD. Do NOT add art-style "
     "adjectives — the trigger carries the trained style.\n"
     "3. SPEAKER BINDING (critical for lip-sync — MOVA has no speaker selector; the spoken line "
-    "attaches to whichever on-screen subject the prose names as speaking). If there are MULTIPLE "
-    "subjects, NAME the one who speaks and have ONLY them speak, and describe the other(s) as "
-    "silent/listening (e.g. '... the dragon listens silently'). Put the speaker front-and-center "
-    "in the visual sentence. If the subject speaks, append exactly: The <speaker> says, in "
-    'English, "<the spoken words>". (Use the named subject, e.g. "The boy says".)\n'
+    "attaches to whichever on-screen subject the prose names as speaking). Put the speaker "
+    "front-and-center — alone and facing the camera — and describe the speaking MOTION (e.g. "
+    "'mouth moving as he speaks'). If the subject speaks, append exactly: He says, in English, "
+    '"<the spoken words>". For MULTIPLE subjects, name the speaker instead ("The boy says, in '
+    "English, ...\") and describe the other(s) as silent/listening (e.g. '... the dragon listens "
+    "silently').\n"
     "4. SPOKEN WORDS: copy the user's quoted words VERBATIM in quotes — never paraphrase, "
     "translate, respell, or alter them (MOVA conditions speech on the literal words). Do NOT "
     "phonetically respell anything: auto-respelling breaks words that were fine (measured net-"
@@ -169,8 +170,17 @@ def mova_format_prompt(user_text, trigger=None, model_id=None, max_new_tokens=16
     sys_prompt = _MOVA_REWRITE_SYS.format(trigger=((trigger or "").strip() or "<none>"))
     model, processor = _load_vlm(mid)
     try:
+        # One worked example (few-shot) — a 4B model follows the format far more reliably with a
+        # concrete pattern than from rules alone. Style words stay OUT (the trigger owns the look);
+        # speaker is foregrounded; the speaking motion is described; dialogue is verbatim in quotes.
+        _ex_in = 'orel says I love Pinokio while his nose grows longer'
+        _ex_out = ('moralorel, a boy in a green shirt and blue shorts stands alone and faces the '
+                   'camera, his nose growing in length as he speaks. He says, in English, '
+                   '"I love Pinokio".')
         messages = [
             {"role": "system", "content": [{"type": "text", "text": sys_prompt}]},
+            {"role": "user", "content": [{"type": "text", "text": _ex_in}]},
+            {"role": "assistant", "content": [{"type": "text", "text": _ex_out}]},
             {"role": "user", "content": [{"type": "text", "text": (user_text or "").strip()}]},
         ]
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -588,7 +598,17 @@ def asr_dialogue_recaption(dataset_dir, model: str = "base", min_prob: float = 0
                     else (txt.read_text(encoding="utf-8").strip() if txt.exists() else ""))
         if has_speech:
             line = text.strip().strip('"')
-            newcap = f'{base_cap} He says, in English, "{line}"'
+            # The Qwen caption ends with a generic sound clause ("...he speaks."); the verbatim
+            # line replaces it — strip a trailing speak/talk clause so we don't get "he speaks. He
+            # says ...". Non-speech sound clauses (footsteps, a door slams) are left intact.
+            import re as _re
+            base = _re.sub(
+                r"[,.;]\s*(?:and\s+)?(?:he|she|they|the\s+[\w-]+)\s+(?:is\s+|are\s+)?"
+                r"(?:speak|speaks|speaking|talk|talks|talking)\b[^.?!]*[.?!]?\s*$",
+                "", base_cap, flags=_re.I).rstrip()
+            if base and base[-1] not in ".!?":
+                base += "."
+            newcap = f'{base} He says, in English, "{line}"'
             n_speech += 1
         else:
             newcap = base_cap
