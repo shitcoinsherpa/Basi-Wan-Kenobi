@@ -1212,16 +1212,20 @@ def build_ui():
                     # GPU — but not on Windows, where the desktop compositor shares the card. So
                     # tier+platform gate rather than hide it from Linux users.
                     _v = detect_vram_gb(); _linux = sys.platform.startswith("linux")
-                    _mova_res_choices = ["320x240 (240p — trained baseline, fastest)"]
+                    # 240p + 360p on every MOVA-capable card (inference is far lighter than training,
+                    # so 360p generates fine even where 360p TRAINING needs 16GB). 360p uses the same
+                    # 464x352 bucket the Gym trains at, so a 360p LoRA generates at its trained dims.
+                    _mova_res_choices = ["320x240 (240p — trained baseline, fastest)",
+                                         "464x352 (360p — sharper, still light)"]
                     if _v >= 16:
                         _mova_res_choices.append("640x480 (480p — sharper, more VRAM/time)")
                     if _v >= 24 and _linux:
                         _mova_res_choices.append("960x720 (720p — Linux + clean GPU; at the VRAM edge)")
                     mova_res = gr.Dropdown(
                         label="Resolution", choices=_mova_res_choices, value=_mova_res_choices[0],
-                        info="240p all cards; 480p needs ~16GB+. 720p sits at the 24GB edge — shown "
-                             "only on Linux with a clean (non-display) GPU; on Windows the desktop "
-                             "shares the GPU, so it isn't offered there.")
+                        info="240p & 360p on all cards (360p matches the Gym's 360p training bucket); "
+                             "480p needs ~16GB+. 720p sits at the 24GB edge — shown only on Linux with "
+                             "a clean (non-display) GPU; on Windows the desktop shares the GPU.")
                     with gr.Row():
                         mova_frames = gr.Slider(25, 81, value=81, step=8,
                             label="Frames (24fps)",
