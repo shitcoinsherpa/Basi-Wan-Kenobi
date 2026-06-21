@@ -39,22 +39,24 @@ module.exports = {
       },
     },
 
-    // ── PyTorch (+vision+audio) into env_mova, matched cu128 set, via env_mova's own pip. Matches
-    // the MAIN app's torch 2.7/cu128 so MOVA never raises the driver bar (CUDA 13/cu130 needs much
-    // newer drivers). MOVA's STYLE is the I2V reference image, not torch/compile, so no newer torch
-    // is needed. NVIDIA path; CPU fallback keeps the env importable.
+    // ── PyTorch (+vision+audio) into env_mova, matched cu128 set. Matches the MAIN app's torch
+    // 2.7/cu128 so MOVA never raises the driver bar (CUDA 13/cu130 needs much newer drivers); the
+    // STYLE is the I2V reference image, not torch/compile, so no newer torch is needed. Driven by
+    // tools/ensure_env_mova_torch.py, which only pip-installs when torch is actually missing/wrong —
+    // a bare `pip install torch==2.7.0 --index-url cu128` re-DOWNLOADED the 3.3GB wheel every Update
+    // (pip doesn't treat the installed +cu128 local build as 'satisfied' under --index-url).
     {
       when: "{{gpu === 'nvidia'}}",
       method: "shell.run",
       params: {
-        message: MOVA_PIP + " install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128",
+        message: MOVA_PY + " tools/ensure_env_mova_torch.py https://download.pytorch.org/whl/cu128",
       },
     },
     {
       when: "{{gpu !== 'nvidia'}}",
       method: "shell.run",
       params: {
-        message: MOVA_PIP + " install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0",
+        message: MOVA_PY + " tools/ensure_env_mova_torch.py",
       },
     },
 
