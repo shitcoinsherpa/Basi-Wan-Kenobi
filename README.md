@@ -73,4 +73,3 @@ Wan2.2-T2V-A14B (base / VAE / T5), Wan2.2 GGUF Q4 pairs (T2V / I2V / VACE / S2V)
 ## License & credits
 
 Original code is **AGPL-3.0** (see [LICENSE](LICENSE)); bundled and fetched third-party components keep their own (permissive) licenses (see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)). Built on the work of the Wan team, kohya-ss, OpenMOSS (MOVA), city96, QuantStack, LightX2V, the Qwen team, Stability AI, Depth-Anything, and cocktailpeanut — full acknowledgments in [CREDITS.md](CREDITS.md). Generated content is yours.
-</content>
