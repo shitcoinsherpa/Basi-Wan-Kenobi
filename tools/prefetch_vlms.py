@@ -24,7 +24,21 @@ from basi.caption import MODEL_TIERS, select_model_for_vram  # noqa: E402
 models = list(dict.fromkeys([MODEL_TIERS[12], select_model_for_vram()]))
 print(f"[basiwan] prefetching {len(models)} VLM model(s): {models}", flush=True)
 for mid in models:
+    # Skip cleanly if already cached: local_files_only never touches the network, so a re-run
+    # (e.g. Update) doesn't re-scan/re-pull a model we already have. Only fetch what's missing.
+    try:
+        snapshot_download(mid, local_files_only=True)
+        print(f"[basiwan] {mid} already cached — skipping", flush=True)
+        continue
+    except Exception:
+        pass  # not fully cached -> fetch below
     print(f"[basiwan] downloading {mid} …", flush=True)
-    snapshot_download(mid)
-    print(f"[basiwan] {mid} complete", flush=True)
+    try:
+        snapshot_download(mid)
+        print(f"[basiwan] {mid} complete", flush=True)
+    except Exception as e:
+        # Non-fatal + isolated: one model's hiccup must not abort the others or the install. The
+        # app's launch-time background prefetch (and first-use download) is the safety net.
+        print(f"[basiwan] WARN: {mid} prefetch failed ({type(e).__name__}: {e}); "
+              f"it will download on first use in the app", flush=True)
 print("[basiwan] VLM prefetch done", flush=True)
