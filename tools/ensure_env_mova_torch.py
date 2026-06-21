@@ -27,10 +27,10 @@ try:
     ok = torch.__version__.startswith(WANT) and (cuda is not None if need_cuda else True)
     if ok:
         print(f"[basiwan] env_mova torch already present: {torch.__version__} "
-              f"(cuda={cuda}) — skipping download", flush=True)
+              f"(cuda={cuda}) -- skipping download", flush=True)
     else:
         print(f"[basiwan] env_mova torch is {torch.__version__} (cuda={cuda}); "
-              f"want {WANT}{' +cuda' if need_cuda else ''} — reinstalling", flush=True)
+              f"want {WANT}{' +cuda' if need_cuda else ''} -- reinstalling", flush=True)
 except Exception as e:
     print(f"[basiwan] env_mova torch not importable ({type(e).__name__}); installing", flush=True)
 
