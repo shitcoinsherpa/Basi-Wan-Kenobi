@@ -1,0 +1,8 @@
+# pip CONSTRAINTS for env_mova installs — pin torch so MOVA's deps (descript-audiotools,
+# diffusers, mmengine, bitsandbytes, ...) can never move it off the cu128 build that
+# install_mova.js installs. A bare ==2.7.0 (no +cu128) is satisfied by the installed
+# 2.7.0+cu128 wheel, so pip KEEPS it instead of pulling a PyPI/CPU torch. This makes the
+# torch install idempotent across Pinokio Updates (no 3.3GB re-download every time).
+torch==2.7.0
+torchvision==0.22.0
+torchaudio==2.7.0

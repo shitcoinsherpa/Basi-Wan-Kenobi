@@ -77,7 +77,7 @@ module.exports = {
     {
       method: "shell.run",
       params: {
-        message: MOVA_PIP + " install bitsandbytes || echo [basiwan] bitsandbytes install failed - MOVA unavailable (needed for import + NF4)",
+        message: MOVA_PIP + " install -c tools/mova_torch_constraints.txt bitsandbytes || echo [basiwan] bitsandbytes install failed - MOVA unavailable (needed for import + NF4)",
       },
     },
 
@@ -98,11 +98,13 @@ module.exports = {
       params: { message: MOVA_PY + " scripts/patch_mova_pipeline.py" },
     },
 
-    // ── MOVA INFERENCE deps (core, cross-platform: no torchcodec/yunchang/flash). Installed
-    //    WITHOUT MOVA's bundled torch pin so the env_mova torch above (cu128) is preserved.
+    // ── MOVA INFERENCE deps (core, cross-platform: no torchcodec/yunchang/flash). The
+    //    -c constraints pins torch==2.7.0 so MOVA's deps (descript-audiotools, diffusers,
+    //    mmengine, ...) CANNOT move it off the cu128 build installed above — without this they
+    //    swap in a PyPI/CPU torch, and the next Update's torch step re-downloads the 3.3GB wheel.
     {
       method: "shell.run",
-      params: { message: MOVA_PIP + " install ./ext/mova" },
+      params: { message: MOVA_PIP + " install -c tools/mova_torch_constraints.txt ./ext/mova" },
     },
     // huggingface_hub for the weight fetch below (descript-audiotools/diffusers pull most deps).
     {
