@@ -6,7 +6,7 @@
 
 ![BASI WAN KENOBI](icon.png)
 
-A one-click [Pinokio](https://pinokio.computer) app for making and training video on consumer NVIDIA GPUs: text/image-to-video, talking characters, restyle, and synchronized audio+video — plus LoRA training for all of it.
+A one-click [Pinokio](https://pinokio.co) app for making and training video on consumer NVIDIA GPUs: text/image-to-video, talking characters, restyle, and synchronized audio+video — plus LoRA training for all of it.
 
 ## Features
 
@@ -22,7 +22,7 @@ A one-click [Pinokio](https://pinokio.computer) app for making and training vide
 
 ## Install
 
-**[Recommended]** Use [pinokio.computer](https://pinokio.computer) to install this app with one click — find it in **Discover** ("BASI WAN KENOBI"), or **Download from URL** → this repo.
+**[Recommended]** Use [pinokio.co](https://pinokio.co) to install this app with one click — find it in **Discover** ("BASI WAN KENOBI"), or **Download from URL** → this repo.
 
 <details>
 <summary>Manual install (Linux / WSL, NVIDIA)</summary>
