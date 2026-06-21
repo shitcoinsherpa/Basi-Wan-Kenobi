@@ -1,4 +1,4 @@
-"""BASIWAN deep-profile — single module per 2026-06-08 research fan-out.
+"""BASIWAN deep-profile — single module per research fan-out.
 
 Two modes:
 - LIGHT (BASIWAN_PROFILE=1): per-step wall + alloc + cudaPeekAtLastError
@@ -12,7 +12,7 @@ Wired into tools/run_one_video_gguf.py at three sites:
 2. _basiwan_swap_forward at H2D prefetch (detect_sync_degradation wrap)
 3. _prepare_then_reapply_swap at MoE boundary residency burst
 
-Built from the four-agent research fan-out 2026-06-08. The single most
+Built from the four-agent research fan-out. The single most
 load-bearing signal: assert_cuda_clean() before each expert-boundary
 .to(cuda) call. WSL2 dxgkrnl translates at least two distinct failures
 (resource table exhaustion, pinned-page cap) into cudaErrorMemoryAllocation
@@ -150,7 +150,7 @@ def scan_pinned_bytes() -> int:
     successfully returns flags via cudaHostGetFlags (== pinned), sum bytes.
 
     Uses libcudart directly via ctypes — torch._C._cudart does NOT expose
-    cudaHostGetFlags (verified empirically 2026-06-08). The _CUDART handle
+    cudaHostGetFlags. The _CUDART handle
     is initialized at module import.
     """
     if not _DEEP or _CUDART is None:

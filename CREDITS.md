@@ -1,6 +1,8 @@
 # Credits & Acknowledgments
 
-BASI WAN K3N0B1 is built on the work of many people. Progress is putting
+BASI WAN KENOBI was created by **[llmsherpa](https://x.com/LLMSherpa)** ([@shitcoinsherpa](https://github.com/shitcoinsherpa)) of **[BT6](https://bt6.gg)**.
+
+It is built on the work of many people. Progress is putting
 blocks upon foundations laid by others — these are the signatures on the
 cornerstones. Thank you, all of you.
 
@@ -52,6 +54,21 @@ cornerstones. Thank you, all of you.
   Qwen2.5-VL (arXiv:2502.13923), Qwen2-VL (arXiv:2409.12191).
 - **TAEHV** (tiny video VAE, taew2_1) — Ollin Boer Bohan
   ([madebyollin/taehv](https://github.com/madebyollin/taehv), MIT).
+- **MOVA** (joint audio+video) — OpenMOSS
+  ([OpenMOSS-Team/MOVA-360p](https://huggingface.co/OpenMOSS-Team/MOVA-360p),
+  Apache-2.0). The joint A/V base for MOVA training (Gym) and generation (Studio).
+- **Stable Diffusion XL base 1.0** — Stability AI
+  ([stabilityai/stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0),
+  CreativeML Open RAIL++-M). Paints the per-prompt style reference for MOVA T2AV.
+- **IP-Adapter** (InstantStyle) — Hu Ye et al.
+  ([h94/IP-Adapter](https://huggingface.co/h94/IP-Adapter), Apache-2.0). SDXL
+  style transfer for the MOVA reference maker.
+- **wav2vec2-large-xlsr-53-English** — Jonatas Grosman
+  ([jonatasgrosman/wav2vec2-large-xlsr-53-english](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-english),
+  Apache-2.0). Audio encoder for S2V (talking-character) mode.
+- **Depth-Anything-V2-Small** — Lihe Yang et al.
+  ([depth-anything/Depth-Anything-V2-Small-hf](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf),
+  Apache-2.0). Depth estimation for VACE depth-lock restyle.
 
 ## Code
 

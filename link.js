@@ -1,30 +1,19 @@
-// BASIWAN — Save Disk Space (fs.link peers). Deduplicates model weights
-// against the cocktailpeanut ecosystem so users who already have ComfyUI /
-// Forge / Fooocus don't double-store Wan2.2 base weights or VAE files.
+// BASIWAN — "Save Disk Space". ONE safe, no-pollution dedup operation:
 //
-// Drives:
-//   - checkpoints/Wan2.2-T2V-A14B/         (~28 GB experts + VAE + text encoder)
-//   - checkpoints/Wan2.2-T2V-A14B-GGUF/    (Q4_K_M / Q8_0 variants if using quantized path)
-//   - checkpoints/lightning_lora/          (Wan2.2-Lightning 4-step LoRA)
-//   - checkpoints/taehv/                   (TAEHV tiny VAE)
+//   fs.link {venv:"env"} — symlinks identical pip packages (torch, diffusers, etc.) from this
+//   app's venv into Pinokio's shared /drive/drives/pip store, so multiple apps share a single
+//   physical copy. Pure disk win, zero cross-app side effects.
 //
-// Peers list mirrors fluxgym / cogstudio canonical: pinokiofactory + cocktailpeanutlabs.
+// We deliberately do NOT cross-mount basiwan's checkpoints/ into the shared ecosystem "checkpoints"
+// drive (the old peers list did this). Basiwan's private model zoo — MOVA-360p (~78GB), the Wan
+// experts, the GGUF pairs, S2V — would otherwise pollute the model lists of comfy / forge / fooocus /
+// automatic1111, since those apps scan the same shared checkpoints folder. Instead, cross-app reuse
+// of the ONE genuinely-shared model (SDXL base) is handled cleanly at DOWNLOAD time by
+// tools/ensure_weights.py: it hardlinks an existing peer copy (or one under $BASIWAN_SHARED_DIR)
+// rather than re-downloading, with no pollution of any other app. (env_mova is intentionally left
+// out of venv dedup — it's a conda env kept isolated by design; see install_mova.js.)
 module.exports = {
   run: [
-    {
-      method: "fs.link",
-      params: {
-        drive: {
-          checkpoints: "checkpoints",
-        },
-        peers: [
-          "pinokiofactory/comfy",
-          "pinokiofactory/stable-diffusion-webui-forge",
-          "cocktailpeanutlabs/comfyui",
-          "cocktailpeanutlabs/fooocus",
-          "cocktailpeanutlabs/automatic1111",
-        ],
-      },
-    },
+    { method: "fs.link", params: { venv: "env" } },
   ],
 };

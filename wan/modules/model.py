@@ -1,5 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN K3N0B1: GGUF
+# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN KENOBI: GGUF
 # quantized path, block-swap offload, persistent worker, I2V graft, tiled
 # VAE, profiling. See THIRD_PARTY_LICENSES.md.
 import json
@@ -24,13 +24,13 @@ def sinusoidal_embedding_1d(dim, position):
     # preprocess
     assert dim % 2 == 0
     half = dim // 2
-    # [Faster-Wan2.2 P14] FP32 not FP64. Position values are timestep ints (max 1000),
+    # FP32 not FP64. Position values are timestep ints (max 1000),
     # max sinusoid angle ≈ 1000 rad. FP32 ε≈1e-7 — overhead trig accuracy unnecessary.
     # FP64 temp tensors were 2× bandwidth/memory. At freq_dim=256 + B*seq_len=151200,
     # FP64 sinusoid+cos+sin+cat was ~310 MB temp; FP32 is ~155 MB.
     position = position.to(torch.float32)
 
-    # [Faster-Wan2.2 P27] Cache the frequency table per (half, device) so we don't
+    # Cache the frequency table per (half, device) so we don't
     # allocate `torch.arange(half).to(device)` every call. The allocation is illegal
     # inside `torch.cuda.graph` capture; caching makes the function CUDA-Graph-safe.
     freq_key = (half, position.device, position.dtype)
@@ -48,7 +48,7 @@ def sinusoidal_embedding_1d(dim, position):
 @torch.amp.autocast('cuda', enabled=False)
 def rope_params(max_seq_len, dim, theta=10000):
     assert dim % 2 == 0
-    # [Faster-Wan2.2 P3] FP32 is sufficient for trig precision at max_seq_len=1024,
+    # FP32 is sufficient for trig precision at max_seq_len=1024,
     # theta=10000 → rel err < 1e-7. Stock used FP64 → complex128 tables, 8 bytes per
     # element instead of 4. Memory and bandwidth halved with no quality impact.
     freqs = torch.outer(
@@ -66,7 +66,7 @@ def rope_apply(x, grid_sizes, freqs):
     # split freqs
     freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
 
-    # [Faster-Wan2.2 P34 — 2026-05-31] Chunked rope path for high-seq inference.
+    # Chunked rope path for high-seq inference.
     # At p720_49f (seq=46800) the .float() upcast allocates 958 MB transient
     # AND the complex multiply produces another 958 MB intermediate. Chunking
     # the per-sample work along seq dim caps the spike at ~80 MB per chunk
@@ -103,7 +103,7 @@ def rope_apply(x, grid_sizes, freqs):
                 x_out = torch.cat([x_out, x[i, seq_len:]])
             output.append(x_out)
         else:
-            # [Faster-Wan2.2 P3] FP32 (was FP64) — full path at low seq.
+            # FP32 (was FP64) — full path at low seq.
             x_i = torch.view_as_complex(x[i, :seq_len].float().reshape(
                 seq_len, n, -1, 2))
             # apply rotary embedding
@@ -111,7 +111,7 @@ def rope_apply(x, grid_sizes, freqs):
             x_i = torch.cat([x_i, x[i, seq_len:]])
             # append to collection
             output.append(x_i)
-    # [Faster-Wan2.2 P3] return input dtype (was always FP32 → downstream had to cast back).
+    # return input dtype (was always FP32 → downstream had to cast back).
     return torch.stack(output).to(x.dtype)
 
 
@@ -128,7 +128,7 @@ class WanRMSNorm(nn.Module):
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        # [Faster-Wan2.2 P34] Skip the .float() upcast at extreme seq — saves
+        # Skip the .float() upcast at extreme seq — saves
         # 2× input-bytes transient (e.g. 740 MB → no transient at p720_81f
         # k-norm on (1, 75600, 40, 128) bf16). RMSNorm's normalization is
         # numerically stable in bf16 for activations within reasonable range.
@@ -138,13 +138,8 @@ class WanRMSNorm(nn.Module):
             _rms_bf16_active = (x.dim() >= 2 and x.shape[-2] > 50000)
         else:
             _rms_bf16_active = _rms_bf16 == "1"
-        # Debug: log once per process to surface dtype/shape at norm call
-        if not hasattr(WanRMSNorm, "_debug_logged"):
-            print(f"[P34-debug RMSNorm] x.dtype={x.dtype} x.shape={tuple(x.shape)} "
-                  f"_rms_bf16_active={_rms_bf16_active}", flush=True)
-            WanRMSNorm._debug_logged = True
         if _rms_bf16_active and x.dtype in (torch.bfloat16, torch.float16):
-            # [P34] self.weight may be fp32 (RMSNorm params often kept high-precision).
+            # self.weight may be fp32 (RMSNorm params often kept high-precision).
             # bf16 * fp32 = fp32, promoting throughout downstream. Cast weight inline.
             # Also: PyTorch's bf16 autocast may promote rsqrt/mean to fp32 for stability,
             # so disable autocast in this stage too.
@@ -156,7 +151,7 @@ class WanRMSNorm(nn.Module):
             orig = x.dtype
             _w_bf = self.weight if self.weight.dtype == torch.bfloat16 else self.weight.to(torch.bfloat16)
             return (self._norm(x.bfloat16()) * _w_bf).to(orig)
-        # [Faster-Wan2.2 P4 — REJECTED] torch.nn.functional.rms_norm in PyTorch 2.7
+        # torch.nn.functional.rms_norm in PyTorch 2.7
         # is NOT a fused CUDA kernel — it decomposed back to Python ops + measured
         # -17% on dim=5120 (the hot Wan path). Original Python loop is faster on Ada.
         return self._norm(x.float()).type_as(x) * self.weight
@@ -176,7 +171,7 @@ class WanLayerNorm(nn.LayerNorm):
             x(Tensor): Shape [B, L, C]
         """
         import torch.nn.functional as F
-        # [Faster-Wan2.2 P34] At extreme seq (p720_81f: 75600 tokens × 5120
+        # At extreme seq (p720_81f: 75600 tokens × 5120
         # dim bf16 = 740 MB), the P11 fp32 upcast produces 1.5 GB transient
         # plus another 1.5 GB for the fp32 norm output. PyTorch 2.6+ supports
         # bf16 layer_norm natively (verified preserves dtype). Auto-trigger
@@ -188,12 +183,12 @@ class WanLayerNorm(nn.LayerNorm):
         else:
             _ln_bf16_active = _ln_bf16 == "1"
         if _ln_bf16_active and x.dtype in (torch.bfloat16, torch.float16):
-            # [P34] PyTorch's bf16 autocast force-promotes layer_norm to fp32 for
+            # PyTorch's bf16 autocast force-promotes layer_norm to fp32 for
             # stability, returning fp32 even with bf16 input. Disable autocast
             # locally to keep this stage in bf16.
             with torch.amp.autocast('cuda', enabled=False):
                 return F.layer_norm(x, self.normalized_shape, None, None, self.eps)
-        # [Faster-Wan2.2 P11] FP8-safe: use explicit .to(torch.float32) instead of .float().
+        # FP8-safe: use explicit .to(torch.float32) instead of .float().
         # When upstream nn.Linear is FP8-quantized via torchao, intermediate tensors flowing
         # in carry quantized-tensor wrappers. .float() on those can silently no-op (keep
         # bfloat16), then F.layer_norm raises "expected Float but found BFloat16". .to(dtype)
@@ -240,7 +235,7 @@ class WanSelfAttention(nn.Module):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
         # query, key, value function
-        # [Faster-Wan2.2 P2 — REJECTED] Tried fused QKV (1× dim→3*dim GEMM) hoping
+        # Tried fused QKV (1× dim→3*dim GEMM) hoping
         # for launch-overhead + L2-reuse win. Measured -2.2% on 14B 480p, -0.6% on
         # 720p — cuBLAS already saturates the 5120×5120 GEMM; widening to 5120×15360
         # gives no proportional benefit on Ada. Three separate launches stay.
@@ -266,7 +261,7 @@ class WanSelfAttention(nn.Module):
 
 
 class WanCrossAttention(WanSelfAttention):
-    # [Faster-Wan2.2 P12] context K/V projection cache.
+    # context K/V projection cache.
     # Context (text embeddings) is constant across all denoising steps within a
     # single generation. Original code recomputes k=norm_k(self.k(context)) and
     # v=self.v(context) on every block × every step × cond+uncond = 40 × 50 × 2
@@ -371,7 +366,7 @@ class WanAttentionBlock(nn.Module):
             seq_lens(Tensor): Shape [B], length of each sequence in batch
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
-            mod_scratch(Tensor, optional): [Faster-Wan2.2 P31] Shared (B,L,6,C)
+            mod_scratch(Tensor, optional): Shared (B,L,6,C)
                 scratch tensor provided by WanModel.forward so the per-block
                 `(modulation + e)` computation can land in a single reused buffer
                 instead of allocating a fresh tensor per block. Required for
@@ -379,17 +374,12 @@ class WanAttentionBlock(nn.Module):
                 private pool. When None we fall back to the original allocator
                 path (correct, but pool-hungry under capture).
         """
-        # [Faster-Wan2.2 P9] AdaLN-Zero modulation: drop FP32 autocast round-trips.
+        # AdaLN-Zero modulation: drop FP32 autocast round-trips.
         # Stock: norm(x).float() + e (FP32) → ~750 MB allocator hit per block per step
         # at 14B 720p × 40 blocks × 50 steps × 2 (CFG) = many PB of pointless bandwidth.
         # Modulation values are randn/sqrt(dim) ≈ 0.014 — well within BF16 precision.
         # Disable with BASIWAN_NO_BF16_MOD=1 to fall back to stock FP32 path.
-        # Debug: trace x dtype through block first time
-        if not hasattr(WanAttentionBlock, "_p34_block_logged"):
-            print(f"[P34-debug Block] entry x.dtype={x.dtype} e.dtype={e.dtype} "
-                  f"mod_scratch={mod_scratch.dtype if mod_scratch is not None else None}", flush=True)
-            WanAttentionBlock._p34_block_logged = True
-        # [P34] Force-take bf16 path even if x somehow drifted to fp32, since
+        # Force-take bf16 path even if x somehow drifted to fp32, since
         # legacy path's `(modulation + e)` out-of-place add allocates 8 GB at
         # p720_81f. Set BASIWAN_FORCE_BF16_MOD=0 to restore strict check.
         _bf16_mod = (_os.environ.get("BASIWAN_NO_BF16_MOD") != "1") and (
@@ -398,7 +388,7 @@ class WanAttentionBlock(nn.Module):
         )
 
         if _bf16_mod:
-            # [Faster-Wan2.2 P31] In-place modulation+e via shared scratch when
+            # In-place modulation+e via shared scratch when
             # provided. mod_scratch is allocated once at the model level (P31 in
             # model.forward) and reused across all 40 blocks — captured graph
             # pool sees a single 480 MB allocation instead of 40 × 480 MB.
@@ -409,7 +399,7 @@ class WanAttentionBlock(nn.Module):
                 e_bf = mod_scratch.chunk(6, dim=2)
                 _restore_e = False
             else:
-                # [Faster-Wan2.2 P34 — 2026-05-31] At extreme seq (p720_81f:
+                # At extreme seq (p720_81f:
                 # e is 4.4 GB), the out-of-place `(mod.unsqueeze(0) + e)` add
                 # OOMs because it allocates a fresh 4.4 GB tensor alongside e.
                 # In-place `e.add_(mod)` mutates e to e+mod, takes chunks (which
@@ -422,7 +412,7 @@ class WanAttentionBlock(nn.Module):
                 e_bf = e.chunk(6, dim=2)
                 _restore_e = True
 
-            # [Faster-Wan2.2 FFFw REJECTED 2026-06-06] Tried fused Triton kernel
+            # Tried fused Triton kernel
             # per-token-AdaLN modulation in tools/gguf_vendor/fused_norm_mod_triton.py.
             # Kernel correctness self-test passes within bf16 rounding tolerance,
             # but e2e p720_17f cat_boxing measures -0.0115 composite Q regression
@@ -433,17 +423,12 @@ class WanAttentionBlock(nn.Module):
             # artifacts. The Triton path is numerically MORE precise but produces
             # slightly different bf16 outputs → drifts noise predictions → ~1.4%
             # composite Q drop. Modest wall win (-3.9%) not worth quality cost.
-            # See tools/gguf_vendor/fused_norm_mod_triton.py (kept for future
-            # bf16-rounding-matched variant) + memory/audit_FFFw_*_2026-06-06.md.
+            # See tools/gguf_vendor/fused_norm_mod_triton.py (kept for a future
+            # bf16-rounding-matched variant).
             _n1 = self.norm1(x)
             _scale = (1 + e_bf[1].squeeze(2))
             _shift = e_bf[0].squeeze(2)
             _attn_in = _n1 * _scale + _shift
-            if not hasattr(WanAttentionBlock, "_p34_attn_in_logged"):
-                print(f"[P34-debug Block] norm1(x).dtype={_n1.dtype} scale.dtype={_scale.dtype} "
-                      f"shift.dtype={_shift.dtype} attn_in.dtype={_attn_in.dtype} "
-                      f"e_bf[0].dtype={e_bf[0].dtype} e_bf[1].dtype={e_bf[1].dtype}", flush=True)
-                WanAttentionBlock._p34_attn_in_logged = True
             y = self.self_attn(_attn_in, seq_lens, grid_sizes, freqs)
             x = x + y * e_bf[2].squeeze(2)
 
@@ -455,7 +440,7 @@ class WanAttentionBlock(nn.Module):
                 return x
 
             x = cross_attn_ffn(x, context, context_lens, e_bf)
-            # [P34] Restore e (we did e.add_(mod) above; reverse it so the
+            # Restore e (we did e.add_(mod) above; reverse it so the
             # NEXT block sees the original e_block in WanModel.forward kwargs)
             if _restore_e:
                 e.sub_(mod.unsqueeze(0))
@@ -510,7 +495,7 @@ class Head(nn.Module):
             x(Tensor): Shape [B, L1, C]
             e(Tensor): Shape [B, L1, C]
         """
-        # [Faster-Wan2.2 P15] BF16-native head modulation (mirrors P9 in WanAttentionBlock).
+        # BF16-native head modulation (mirrors P9 in WanAttentionBlock).
         # Stock path forced FP32 autocast for modulation chunk + head linear, which round-
         # trips x: BF16 → FP32 → BF16 (head output cast back to x.dtype). Modulation values
         # are randn/sqrt(dim) ≈ 0.014 — safely BF16-representable. P9 validated this pattern.
@@ -519,7 +504,7 @@ class Head(nn.Module):
             x.dtype == torch.bfloat16 or e.dtype == torch.bfloat16
         )
         if _bf16_head:
-            # [P34] At p720_81f we force e to bf16 in WanModel; downstream x
+            # At p720_81f we force e to bf16 in WanModel; downstream x
             # may drift to fp32. Cast x to bf16 so the modulation+norm chain
             # stays in bf16 (saves 1.5 GB at this shape).
             _target = torch.bfloat16
@@ -538,7 +523,7 @@ class Head(nn.Module):
 
 
 class VaceWanAttentionBlock(WanAttentionBlock):
-    """[#388] VACE control block (ali-vilab/VACE wan/modules/model.py). A
+    """VACE control block (ali-vilab/VACE wan/modules/model.py). A
     standard WanAttentionBlock plus:
       * before_proj (block 0 ONLY): fuses the patch-embedded 96-ch control into
         the main latent stream — c = before_proj(c) + x — so the control "enters"
@@ -671,7 +656,7 @@ class WanModel(ModelMixin, ConfigMixin):
         # head
         self.head = Head(dim, out_dim, patch_size, eps)
 
-        # [#388] VACE control branch (ali-vilab/VACE). Constructed ONLY when
+        # VACE control branch (ali-vilab/VACE). Constructed ONLY when
         # vace_layers is given (Wan2.2-Fun-VACE-A14B config: [0,5,10,15,20,25,
         # 30,35], one vace_block per layer). When None — every existing T2V/I2V
         # model — none of this is built, so those models stay byte-identical.
@@ -700,7 +685,7 @@ class WanModel(ModelMixin, ConfigMixin):
         ],
                                dim=1)
 
-        # [Faster-Wan2.2 P8] TeaCache (arXiv 2411.19108) — temporal feature cache.
+        # TeaCache (arXiv 2411.19108) — temporal feature cache.
         # Caches the block-residual across denoising steps; reuses when modulation
         # embedding e0's L1-distance signal predicts low drift in output. CFG-paired.
         #
@@ -708,12 +693,12 @@ class WanModel(ModelMixin, ConfigMixin):
         # Wan2.1-T2V-14B fit (from LiewFeng/TeaCache4Wan2.1). Wan2.2 is MoE A14B
         # with separate high_noise / low_noise expert WanModel instances — each
         # expert is a different network and needs its own degree-4 polynomial fit.
-        # No published Wan2.2 coefficients exist (verified 2026-05-27). Quality
+        # No published Wan2.2 coefficients exist. Quality
         # under these borrowed coefficients is UNMEASURED on Wan2.2 output.
         #
         # To use: requires explicit ack via env BASIWAN_TEACACHE_UNCALIBRATED=1
-        # (else gate refuses to fire even when enable_teacache=True). Refit
-        # harness: tools/teacache_calibrate.py (task #106).
+        # (else gate refuses to fire even when enable_teacache=True), since the
+        # coefficients below are not fit for Wan2.2.
         self.enable_teacache = False
         self.teacache_thresh = 0.15
         self.num_steps = 0
@@ -817,7 +802,7 @@ class WanModel(ModelMixin, ConfigMixin):
         return coeffs
 
     def forward_vace(self, x, vace_context, seq_len, kwargs):
-        """[#388] Run the VACE control stack → return one hint per vace_block.
+        """Run the VACE control stack → return one hint per vace_block.
         Faithful to ali-vilab forward_vace (verified): patch-embed the 96-ch
         control, pad to seq_len, then stream `c` through the vace_blocks. block 0
         fuses the main latent (c = before_proj(c) + x); every block taps a hint
@@ -897,7 +882,7 @@ class WanModel(ModelMixin, ConfigMixin):
         # time embeddings
         if t.dim() == 1:
             t = t.expand(t.size(0), seq_len)
-        # [Faster-Wan2.2 P34 — 2026-05-31] At extreme seq (p720_81f), the fp32
+        # At extreme seq (p720_81f), the fp32
         # e_block tensor is 8.85 GB (1×75600×6×5120 × 4 bytes) — alone this
         # exceeds half of 24 GB VRAM. Switch the time computation to bf16 to
         # halve it to 4.4 GB. Sinusoidal positional embedding values are in
@@ -908,10 +893,6 @@ class WanModel(ModelMixin, ConfigMixin):
         import os as _os
         _time_fp32 = _os.environ.get("BASIWAN_TIME_FP32") == "1"
         _time_bf16 = (not _time_fp32) and (_x_dtype == torch.bfloat16) and (seq_len > 50000)
-        if not hasattr(WanModel, "_p34_debug_logged"):
-            print(f"[P34-debug WanModel] _x_dtype={_x_dtype} seq_len={seq_len} "
-                  f"_time_bf16={_time_bf16} _time_fp32={_time_fp32}", flush=True)
-            WanModel._p34_debug_logged = True
         if _time_bf16:
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 bt = t.size(0)
@@ -925,9 +906,6 @@ class WanModel(ModelMixin, ConfigMixin):
                 e0 = e0.to(torch.bfloat16)
             if e.dtype != torch.bfloat16:
                 e = e.to(torch.bfloat16)
-            if not hasattr(WanModel, "_p34_e0_logged"):
-                print(f"[P34-debug WanModel] e0.dtype={e0.dtype} e0.shape={tuple(e0.shape)}", flush=True)
-                WanModel._p34_e0_logged = True
         else:
             with torch.amp.autocast('cuda', dtype=torch.float32):
                 bt = t.size(0)
@@ -951,7 +929,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
         # context
-        # [Faster-Wan2.2 P18] Cache text_embedding output keyed on input context list[0]
+        # Cache text_embedding output keyed on input context list[0]
         # identity. Context is constant per generation (and per CFG branch) — recomputing
         # the pad + text_embedding GEMM every step is wasted. Also: this fix makes P12's
         # WanCrossAttention K/V cache actually work — P12 keys on id(context_post_embed),
@@ -976,14 +954,14 @@ class WanModel(ModelMixin, ConfigMixin):
                 self._text_emb_cache.pop(next(iter(self._text_emb_cache)))
             self._text_emb_cache[_ctx_key] = context
 
-        # [Faster-Wan2.2 P30] Pre-convert e0 (FP32) to the runtime dtype ONCE.
-        # Each WanAttentionBlock previously did `e.to(x.dtype)` per block, which
-        # in eager just transiently allocates and frees ~960MB BF16, but in a
-        # captured CUDA Graph the per-block alloc gets pinned in the private
-        # pool — 40 blocks × ~960MB at preview shape = 38 GB pool, blowing
-        # past the 24GB GPU and causing replay thrashing / fault. Pre-convert
-        # so the block path sees a constant tensor: no per-block alloc inside
-        # the graph. Eager paths get a marginal speedup too (1 conversion vs 40).
+        # Pre-convert e0 (FP32) to the runtime dtype ONCE.
+        # Doing `e.to(x.dtype)` per block instead would, in eager, just
+        # transiently allocate and free ~960MB BF16 — but in a captured CUDA
+        # Graph each per-block alloc gets pinned in the private pool (40 blocks
+        # × ~960MB at preview shape = 38 GB pool, blowing past the 24GB GPU and
+        # causing replay thrashing / fault). Pre-converting gives the block path
+        # a constant tensor: no per-block alloc inside the graph. Eager paths
+        # get a marginal speedup too (1 conversion vs 40).
         # When BASIWAN_NO_BF16_MOD=1 (legacy FP32 ada-LN path requested),
         # WanAttentionBlock falls into the `assert e.dtype == torch.float32`
         # branch — keep e_block in FP32 in that case so the assert passes.
@@ -992,19 +970,19 @@ class WanModel(ModelMixin, ConfigMixin):
                         else (x.dtype if torch.is_tensor(x) else torch.bfloat16))
         e_block = e0.to(_block_dtype) if e0.dtype != _block_dtype else e0
 
-        # [Faster-Wan2.2 P31] Shared scratch tensor for the per-block
+        # Shared scratch tensor for the per-block
         # `(self.modulation + e)` intermediate. Without this each block alloc'd
         # ~480 MB BF16 at preview shape (or 2 GB at Lightning); inside a
         # captured CUDA Graph all 40 of those allocs get pinned in the private
         # pool, exhausting 24 GB. One shared scratch → constant 480 MB regardless
         # of block count. Reuses the same address across blocks via in-place
         # copy_/add_ in WanAttentionBlock.forward.
-        # [Faster-Wan2.2 P34 — 2026-05-31] Drop scratch at extreme seq. At
+        # Drop scratch at extreme seq. At
         # p720_81f e_block is (1, 75600, 6, 5120) bf16 = 4.4 GB — the persistent
         # scratch buffer can't fit alongside everything else, even with all
-        # other P34 mitigations. Falling back to per-block out-of-place add
-        # (legacy pre-P31 path) costs 4.4 GB transient per block but each is
-        # GC'd between blocks. Trades graph-pinning friendliness for fit.
+        # other P34 mitigations. Falling back to a per-block out-of-place add
+        # costs 4.4 GB transient per block, but each is GC'd between blocks.
+        # Trades graph-pinning friendliness for fit.
         # Auto-disable when e_block.numel() × bytes_per_elem > 3 GB. Override
         # via BASIWAN_NO_MOD_SCRATCH=1 / =0.
         _no_scratch_env = _os.environ.get("BASIWAN_NO_MOD_SCRATCH")
@@ -1030,7 +1008,7 @@ class WanModel(ModelMixin, ConfigMixin):
             freqs=self.freqs,
             context=context,
             context_lens=context_lens)
-        # [Faster-Wan2.2 2026-06-02] cache-dit integration: its
+        # cache-dit integration: its
         # CachedBlocks_Pattern_Base.forward signature is
         # (hidden_states, encoder_hidden_states, **kwargs). Our native
         # block iterations pass `context` only. When cache-dit has
@@ -1043,7 +1021,7 @@ class WanModel(ModelMixin, ConfigMixin):
         if getattr(self, "_is_cached", False):
             kwargs["encoder_hidden_states"] = context
 
-        # [Faster-Wan2.2 P8] TeaCache gate: skip block stack if modulation hasn't drifted.
+        # TeaCache gate: skip block stack if modulation hasn't drifted.
         # Refuses to fire on Wan2.2 unless caller explicitly acks uncalibrated coefficients.
         _teacache_armed = (getattr(self, 'enable_teacache', False) and self.num_steps > 0
                            and _os.environ.get('BASIWAN_TEACACHE_UNCALIBRATED') == '1')
@@ -1052,11 +1030,10 @@ class WanModel(ModelMixin, ConfigMixin):
             warnings.warn(
                 "TeaCache requested but coefficients are fit on Wan2.1-T2V-14B, "
                 "NOT Wan2.2 (MoE A14B). Set BASIWAN_TEACACHE_UNCALIBRATED=1 to "
-                "force-enable with unmeasured quality, or refit via "
-                "tools/teacache_calibrate.py before relying on this path.",
+                "force-enable with unmeasured quality on this path.",
                 RuntimeWarning, stacklevel=2)
             self._teacache_warned = True
-        # [#388] VACE control hints — the vace stack runs ONCE per denoising
+        # VACE control hints — the vace stack runs ONCE per denoising
         # step on the constant control latent, producing one hint per
         # vace_layer; injected additively after the mapped main blocks below.
         # None when no vace_context → the block loops stay byte-identical to the
@@ -1105,17 +1082,14 @@ class WanModel(ModelMixin, ConfigMixin):
                 setattr(self, res_attr, x - ori_x)
             self.cnt = (self.cnt + 1) % max(self.num_steps, 1)
         else:
-            # [P34] Force x to bf16 at extreme seq — guarantees the entire
+            # Force x to bf16 at extreme seq — guarantees the entire
             # block stack stays in bf16 regardless of upstream autocast quirks.
             if (seq_len > 50000 and x.dtype != torch.bfloat16
                     and _os.environ.get("BASIWAN_FORCE_BLOCK_BF16", "1") == "1"):
                 x = x.to(torch.bfloat16)
-                if not hasattr(WanModel, "_p34_block_cast_logged"):
-                    print(f"[P34-debug WanModel] cast x to bf16 before block loop", flush=True)
-                    WanModel._p34_block_cast_logged = True
             for i, block in enumerate(self.blocks):
                 x = block(x, **kwargs)
-                # [#388] inject the VACE hint AFTER the mapped main block (the
+                # inject the VACE hint AFTER the mapped main block (the
                 # verified injection point: x = x + hints[block_id]*scale).
                 if vace_hints is not None and i in self.vace_layers_mapping:
                     _h = vace_hints[self.vace_layers_mapping[i]]
@@ -1176,7 +1150,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
     @torch.no_grad()
     def apply_lora_safetensors(self, lora_path, strength=1.0):
-        """[Faster-Wan2.2 P19] Apply a Wan2.2-Lightning LoRA in-place by merging
+        """Apply a Wan2.2-Lightning LoRA in-place by merging
         lora_up @ lora_down (scaled by alpha/rank) into the base Linear weights.
 
         Format: lightx2v/Wan2.2-Lightning safetensors with keys like

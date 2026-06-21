@@ -202,7 +202,7 @@ class WanS2VAttentionBlock(WanAttentionBlock):
         seg_idx = min(max(0, seg_idx), x.size(1))
         seg_idx = [0, seg_idx, x.size(1)]
 
-        # [S13 2026-06-15 BASIWAN] bf16 AdaLN modulation for the S2V block. The legacy
+        # bf16 AdaLN modulation for the S2V block. The legacy
         # path below upcasts the FULL seq activation to fp32 twice per block
         # (norm1(x).float() + norm2(x).float()) plus fp32-autocast gate-multiplies --
         # ~1GB/block of fp32 transients at 720p seq (profiled: (1,seq,5120) fp32 0.5GB

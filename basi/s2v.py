@@ -14,7 +14,7 @@ bite (same lesson as VACE; do not inherit the T2V Lightning-4 defaults).
 """
 from __future__ import annotations
 
-# [S3] Validated S2V regime — single source of truth. The worker/app S2V path
+# Validated S2V regime — single source of truth. The worker/app S2V path
 # MUST pull these, never inherit the Lightning/SDEdit fast defaults.
 S2V_RECIPE = {
     "sampling_steps": 40,     # wan_s2v_14B.sample_steps
@@ -24,11 +24,10 @@ S2V_RECIPE = {
     "infer_frames": 80,       # per-chunk frame count (speech2video default)
     "motion_frames": 73,      # wan_s2v_14B.transformer.motion_frames (carry overlap)
     "drop_first_motion": True,
-    # [S8] Cross-chunk anti-drift LAB color anchor. mean@0.5 measured strictly
+    # Cross-chunk anti-drift LAB color anchor. mean@0.5 measured strictly
     # better on real S2V output (drift 1.61->1.03 dLAB, seam 0.59->0.30) and
     # removes 85% of injected drift; auto-engages only at >= min_chunks so short
-    # clips (already coherent, drift sub-JND) stay bit-identical. See
-    # tools/_s2v_color_anchor_offline.py + _s2v_drift_probe.py.
+    # clips (already coherent, drift sub-JND) stay bit-identical.
     "color_anchor_strength": 0.5,
     "color_anchor_min_chunks": 4,
 }

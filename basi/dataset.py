@@ -66,8 +66,8 @@ def probe_video(path: Path) -> ClipInfo:
     """Extract video metadata. Prefers PyAV (no external binary needed) and
     falls back to ffprobe binary on PATH.
 
-    [2026-06-09] Windows Pinokio installs don't ship ffprobe; PyAV (the `av`
-    package, already a hard dep) covers the same metadata fields.
+    Windows Pinokio installs don't ship ffprobe; PyAV (the `av` package, already
+    a hard dep) covers the same metadata fields.
     """
     try:
         return _probe_video_pyav(path)
@@ -160,7 +160,7 @@ def find_captions(clip: ClipInfo) -> ClipInfo:
 
 
 def extract_thumbnail(clip_path: Path, dst: Path, time_s: float = 0.0) -> Path | None:
-    """T4.F: extract a single frame as a JPEG thumbnail via ffmpeg.
+    """Extract a single frame as a JPEG thumbnail via ffmpeg.
 
     Returns the dst path on success, or None on failure (caller logs).
     Used by the gym's dataset table to display per-clip posters.
@@ -180,7 +180,7 @@ def extract_thumbnail(clip_path: Path, dst: Path, time_s: float = 0.0) -> Path |
 
 
 def trigger_word_coverage(clips: Iterable[ClipInfo], trigger: str) -> tuple[int, int]:
-    """T4.F: count how many captions contain the trigger word.
+    """Count how many captions contain the trigger word.
 
     Returns (n_covered, n_total). Caller decides threshold (e.g. <80% = warn).
     """
@@ -201,7 +201,7 @@ def trigger_word_coverage(clips: Iterable[ClipInfo], trigger: str) -> tuple[int,
 
 
 def trigger_word_coverage_fast(dataset_dir: str | Path, trigger: str) -> tuple[int, int]:
-    """T4.F fast path — read .txt sidecars directly without ffprobe.
+    """Fast path — read .txt sidecars directly without ffprobe.
 
     Used by the gym's trigger_word.change() handler where we don't need full
     clip metadata, just caption text. ffprobe per-keystroke would be O(N) and
@@ -244,9 +244,8 @@ def bucket_distribution(clips: Iterable[ClipInfo]) -> dict[tuple, int]:
 def scan_dataset(dataset_dir: str | Path, target_frames: int = 81) -> list[ClipInfo]:
     """Walk dataset_dir, probe each video, validate, attach captions.
 
-    [2026-06-09] Removed hard-fail-if-no-ffprobe precheck. probe_video()
-    now uses PyAV first (no external binary needed), falls back to ffprobe
-    binary only if PyAV can't parse the file.
+    probe_video() uses PyAV first (no external binary needed), falling back to
+    the ffprobe binary only if PyAV can't parse the file.
     """
     dataset_dir = Path(dataset_dir)
     exts = {".mp4", ".mov", ".webm", ".mkv", ".avi"}

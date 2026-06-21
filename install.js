@@ -2,10 +2,10 @@
 // requires.bundle "ai" pulls Pinokio's bundled conda; uv pip throughout;
 // venv "env" (canonical path); torch install delegated to torch.js.
 //
-// 2026-06-08: musubi-tuner step split into atomic single-command shell.run
-// blocks because the original 6-command array hung Pinokio's "done"
-// detector on Windows (git's detached-HEAD advice + subshell exit codes
-// confused the PTY watcher). Each step is now idempotent and re-runnable.
+// musubi-tuner setup is split into atomic single-command shell.run blocks
+// for Windows PTY compatibility: a multi-command array hangs Pinokio's
+// "done" detector (git's detached-HEAD advice + subshell exit codes confuse
+// the PTY watcher). Each step is idempotent and re-runnable.
 module.exports = {
   requires: { bundle: "ai" },
   run: [
@@ -35,9 +35,9 @@ module.exports = {
       },
     },
 
-    // ── bitsandbytes: official Windows wheels exist since 0.43
-    // (verified live 2026-06-10: 0.49.2 installs + CUDA-functional on
-    // Windows native). The 24g preset's adamw8bit optimizer needs it.
+    // ── bitsandbytes: official Windows wheels exist since 0.43 (CUDA-
+    // functional on Windows native). The 24g preset's adamw8bit optimizer
+    // needs it.
     {
       method: "shell.run",
       params: {
@@ -98,9 +98,9 @@ module.exports = {
     },
 
     // 6) Patch pyproject.toml: loosen transformers pin for Qwen3-VL.
-    //    Uses a dedicated script (scripts/patch_musubi_pyproject.py) —
-    //    the inline `python -c` form had shell-escape bugs on Windows
-    //    cmd.exe (broke the install 2026-06-08).
+    //    Uses a dedicated script (scripts/patch_musubi_pyproject.py) for
+    //    Windows cmd.exe shell-escape compatibility — the inline
+    //    `python -c` form mangles quoting on cmd.exe.
     {
       method: "shell.run",
       params: {
@@ -128,13 +128,12 @@ module.exports = {
       },
     },
 
-    // ── VLM models at INSTALL time, with visible progress (2026-06-10).
-    // Both the Suggest-prompt model (Qwen3-VL-4B) and the VRAM-tier
-    // captioner (8B at 24G) previously downloaded SILENTLY on first
-    // button click — 8-17 GB behind a frozen progress bar looked like a
-    // dead app. huggingface_hub prints live byte progress here in the
-    // install terminal. Failure is non-fatal: the app's launch-time
-    // background prefetch is the safety net.
+    // ── VLM models at INSTALL time, with visible progress. Prefetching the
+    // Suggest-prompt model (Qwen3-VL-4B) and the VRAM-tier captioner (8B at
+    // 24G) here avoids a silent 8-17 GB download on first button click (which
+    // looks like a dead app behind a frozen progress bar). huggingface_hub
+    // prints live byte progress in the install terminal. Failure is non-fatal:
+    // the app's launch-time background prefetch is the safety net.
     {
       method: "shell.run",
       params: {
@@ -162,7 +161,7 @@ module.exports = {
       },
     },
 
-    // ── [#395] Pre-build the BASIWAN CUDA kernels (NVIDIA only) so the first
+    // ── Pre-build the BASIWAN CUDA kernels (NVIDIA only) so the first
     // generate doesn't stall on a silent ~50s nvcc compile, and a missing
     // toolchain surfaces HERE not mid-generate. Tolerant: build_kernel.py always
     // exits 0 — a skipped pre-build falls back to the runtime lazy build.
@@ -192,7 +191,7 @@ module.exports = {
       when: "{{platform === 'darwin'}}",
       method: "log",
       params: {
-        text: "macOS detected. Wan2.2-A14B requires ~50GB; usable only on M-series with >=32GB unified memory, and even then expect very slow inference (MPS path is not optimized for video diffusion). Linux+NVIDIA is the supported target.",
+        text: "macOS is not supported/tested: this app needs an NVIDIA GPU + a from-source CUDA kernel. Apple MPS isn't optimized for video diffusion (expect very slow or non-working inference even on M-series with >=32GB). Use Windows or Linux with an NVIDIA GPU.",
       },
     },
     {

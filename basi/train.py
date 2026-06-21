@@ -29,32 +29,30 @@ class TrainConfig:
     preset: Preset
     target_resolution: tuple[int, int]   # e.g. (832, 480)
     target_frames: int        # e.g. 81 (4n+1)
-    # [2026-06-09] 16 epochs default (was 20). Gives 8 evaluable checkpoints
-    # at save_every=2. Overfit symptoms show ~ep 10-12 on small datasets;
-    # 16 is the sweet spot for first-attempt LoRAs.
+    # 16 epochs balances convergence with checkpoint diversity: 8 evaluable
+    # checkpoints at save_every=2. Overfit symptoms show ~ep 10-12 on small
+    # datasets; 16 is the sweet spot for first-attempt LoRAs.
     max_train_epochs: int = 16
     save_every_n_epochs: int = 2
-    # [2026-06-10] Per-EPOCH sampling is the primary monitoring signal —
-    # one render per epoch matches the save_every=2 checkpoint cadence so
-    # every checkpoint has visual evidence. Step-based sampling (below)
-    # is the optional extra-frequency knob; 0 disables it.
+    # Per-EPOCH sampling is the primary monitoring signal — one render per
+    # epoch matches the save_every=2 checkpoint cadence so every checkpoint
+    # has visual evidence. Step-based sampling (below) is the optional
+    # extra-frequency knob; 0 disables it.
     sample_every_n_epochs: int | None = 1
     sample_every_n_steps: int = 0
     sample_prompts: list[str] | None = None
     trigger_word: str | None = None
     seed: int = 42
-    # T4.A: Optional resume from a saved state directory (musubi --resume).
-    # If set, must point at a previously-saved training state directory
-    # (musubi saves state every N epochs when --save_state is on).
+    # Optional resume from a saved state directory (musubi --resume; musubi
+    # saves state every N epochs when --save_state is on).
     resume_state: str | None = None
-    # T4.G: Per-image repeats — applies to the [[datasets]] block. >1 means
-    # each clip is iterated N times per epoch, useful for small datasets.
+    # Per-image repeats — applies to the [[datasets]] block. >1 means each
+    # clip is iterated N times per epoch, useful for small datasets.
     num_repeats: int = 1
-    # T4.G: Enable musubi auto-bucketing in the [general] block so the trainer
+    # Enable musubi auto-bucketing in the [general] block so the trainer
     # groups mixed-resolution clips into per-bucket batches rather than padding
     # to the nominal target_resolution.
     enable_bucket: bool = True
-    # [2026-06-09] Scheduler defaults wired in per research synthesis.
     # cosine_with_restarts prevents late-training overfit (lr decays then
     # spikes back); warmup 100 steps avoids early LR shock on small batches.
     # Override via UI for advanced tuning.
@@ -62,32 +60,31 @@ class TrainConfig:
     lr_warmup_steps: int | None = 100
     max_grad_norm: float | None = None    # 0 = disable clip_grad_norm
     weight_decay: float | None = None
-    # [2026-06-10] Source video fps for musubi's 16fps resampling. None =
-    # treat frames as-is (correct for 16fps sources); set to the clips'
-    # real fps (e.g. 24.0 for TV rips) so a 33-frame training window spans
-    # 2 real seconds instead of 1.4. Schema key is `source_fps` — the old
-    # `fps` key was REJECTED by musubi's validator (caught live: cache
-    # step failed with "extra keys not allowed @ datasets[0].fps").
+    # Source video fps for musubi's 16fps resampling. None = treat frames
+    # as-is (correct for 16fps sources); set to the clips' actual fps (e.g.
+    # 24.0 for TV rips) so a 33-frame window spans the right real-time span
+    # (2s instead of 1.4s). Schema key is `source_fps`, not `fps` (musubi's
+    # validator rejects `fps` with "extra keys not allowed @ datasets[0].fps").
     source_fps: float | None = None
-    # [2026-06-10] Timestep windowing per expert (musubi docs/wan.md): the
-    # low expert serves t<875 at inference, high serves t>=875. Training a
-    # single expert across the full range wastes gradient on timesteps it
-    # never serves — worse with shift>1, which skews sampling HIGH.
-    # preserve_distribution_shape keeps the shift distribution's shape
-    # inside the window instead of renormalizing it flat.
+    # Timestep windowing per expert (musubi docs/wan.md): the low expert
+    # serves t<875 at inference, high serves t>=875. Training a single expert
+    # across the full range wastes gradient on timesteps it never serves —
+    # worse with shift>1, which skews sampling HIGH. preserve_distribution_shape
+    # keeps the shift distribution's shape inside the window instead of
+    # renormalizing it flat.
     min_timestep: int | None = None
     max_timestep: int | None = None
     preserve_distribution_shape: bool = False
-    # [2026-06-10] "uniform" + frame_sample=2 trains on 2 evenly-spaced
-    # windows per clip. The previous "head" mode trained on ONLY the first
-    # target_frames window — for 2-5s clips with 33-frame windows that
-    # silently discarded ~35-45% of curated footage (verified in musubi
-    # image_video_dataset.py: head = one fixed window at cache time).
+    # "uniform" + frame_sample=2 trains on 2 evenly-spaced windows per clip.
+    # The "head" mode trains on ONLY the first target_frames window — for 2-5s
+    # clips with 33-frame windows that silently discards ~35-45% of curated
+    # footage (musubi image_video_dataset.py: head = one fixed window at cache
+    # time).
     frame_extraction: str = "uniform"
     frame_sample: int = 2
-    # [2026-06-10] Optional stills arm (official Wan recipe is 30-50 stills
-    # + 10-20 clips): images carry style/detail cheaply, videos carry
-    # motion. Emitted as a second [[datasets]] block.
+    # Optional stills arm (official Wan recipe is 30-50 stills + 10-20 clips):
+    # images carry style/detail cheaply, videos carry motion. Emitted as a
+    # second [[datasets]] block.
     image_dataset_dir: str | None = None
     image_num_repeats: int = 1
     # Per-run overrides of preset values (None = use preset). Lets a style
@@ -101,9 +98,9 @@ class TrainConfig:
 def gen_dataset_toml(cfg: TrainConfig, output_path: Path) -> Path:
     """Write musubi-tuner dataset config (TOML).
 
-    T4.G: emits [[datasets]] with cfg.num_repeats and toggles
-    [general].enable_bucket so musubi auto-groups mixed-resolution clips
-    into per-bucket batches (was: padded all to target_resolution).
+    Emits [[datasets]] with cfg.num_repeats and toggles [general].enable_bucket
+    so musubi auto-groups mixed-resolution clips into per-bucket batches rather
+    than padding all to target_resolution.
     """
     res_w, res_h = cfg.target_resolution
     dataset_block = {
@@ -161,22 +158,19 @@ def gen_cache_commands(cfg: TrainConfig, dataset_toml: Path) -> list[list[str]]:
         "python", str(MUSUBI_ROOT / "src" / "musubi_tuner" / "wan_cache_latents.py"),
         "--dataset_config", str(dataset_toml),
         "--vae", cfg.vae_path,
-        # [2026-06-13] Incremental re-cache. VAE-encoding video is the expensive
-        # half of caching (measured: 114 windows of 33f@720x544); a re-cache
-        # after ADDING clips otherwise re-encodes the whole set. --skip_existing
-        # keys on the latent cache filename, which encodes resolution+frames
-        # (...-033_0720x0544_wan.safetensors) and depends ONLY on the clip
-        # pixels -- independent of captions -- so skipping an existing latent is
-        # safe for every common edit (add/remove clips, edit captions, change
-        # res -> new filename -> re-encoded). Validated non-destructive: a
-        # skip_existing pass over a fully-cached set re-encoded nothing
-        # (sizes-hash + mtimes identical). The one edge it does NOT catch is an
-        # in-place pixel swap that keeps the same filename AND dims (rare; the
-        # autosplit pipeline emits unique names) -- delete that clip's cache to
-        # force a redo. NOTE: deliberately NOT applied to the T5 text cache
-        # above, which keys on clip name not caption content and would serve a
-        # STALE embedding after a caption edit (captions are what users iterate;
-        # T5 over short captions at batch 16 is cheap anyway).
+        # Incremental re-cache. VAE-encoding video is the expensive half of
+        # caching; a re-cache after ADDING clips would otherwise re-encode the
+        # whole set. --skip_existing keys on the latent cache filename, which
+        # encodes resolution+frames (...-033_0720x0544_wan.safetensors) and
+        # depends ONLY on the clip pixels -- not captions -- so skipping an
+        # existing latent is safe for every common edit (add/remove clips, edit
+        # captions, change res -> new filename -> re-encoded). The one edge it
+        # does NOT catch is an in-place pixel swap that keeps the same filename
+        # AND dims (rare; the autosplit pipeline emits unique names) -- delete
+        # that clip's cache to force a redo. Deliberately NOT applied to the T5
+        # text cache above, which keys on clip name not caption content and
+        # would serve a STALE embedding after a caption edit (captions are what
+        # users iterate; T5 over short captions at batch 16 is cheap anyway).
         "--skip_existing",
     ]
     return [t5_cmd, vae_cmd]
@@ -241,10 +235,10 @@ def gen_train_command(cfg: TrainConfig, output_dir: Path, dataset_toml: Path) ->
         cmd += ["--max_timestep", str(cfg.max_timestep)]
     if cfg.preserve_distribution_shape:
         cmd.append("--preserve_distribution_shape")
-    # T4.A: resume-from-state
+    # resume-from-state
     if cfg.resume_state:
         cmd += ["--resume", cfg.resume_state, "--save_state"]
-    # T4.H: advanced optimizer args (only emit if explicitly set)
+    # advanced optimizer args (only emit if explicitly set)
     if cfg.lr_scheduler:
         cmd += ["--lr_scheduler", cfg.lr_scheduler]
     if cfg.lr_warmup_steps is not None:
@@ -281,7 +275,7 @@ def _venv_bin_dir(venv_python: str) -> Path:
 def gen_launch_script(cmd: list[str], output_dir: Path, venv_python: str) -> Path:
     """Write a generated launcher that runs accelerate on the train script.
 
-    Cross-platform [2026-06-09]:
+    Cross-platform:
       - Windows: writes `train.bat` that invokes accelerate.exe directly with
         full paths (no activate.bat needed — avoids cmd nesting quirks).
       - Unix:    writes `train.sh` (original Flux-Gym pattern, kept verbatim
@@ -298,11 +292,11 @@ def gen_launch_script(cmd: list[str], output_dir: Path, venv_python: str) -> Pat
         cmd_str = " ^\n    ".join(parts)
         # PYTHONUTF8=1: musubi prints bilingual (Japanese) log messages;
         # the Windows console default cp1252 can't encode them and the
-        # trainer DIES on a print() at optimizer setup (caught live
-        # 2026-06-10: UnicodeEncodeError in accelerate.state.print).
+        # trainer DIES on a print() at optimizer setup
+        # (UnicodeEncodeError in accelerate.state.print).
         script_path.write_text(
             "@echo off\r\n"
-            f"REM BASI WAN K3N0B1 generated training script for: {output_dir.name}\r\n"
+            f"REM BASI WAN KENOBI generated training script for: {output_dir.name}\r\n"
             "set PYTHONUTF8=1\r\n"
             "set PYTHONIOENCODING=utf-8\r\n"
             f"cd /d \"{MUSUBI_ROOT}\"\r\n"
@@ -316,7 +310,7 @@ def gen_launch_script(cmd: list[str], output_dir: Path, venv_python: str) -> Pat
         cmd_str = " \\\n    ".join([str(accelerate)] + cmd[1:])
         script_path.write_text(
             "#!/bin/bash\n"
-            f"# BASI WAN K3N0B1 generated training script for: {output_dir.name}\n"
+            f"# BASI WAN KENOBI generated training script for: {output_dir.name}\n"
             "set -e\n"
             f"cd {MUSUBI_ROOT}\n"
             f"source {venv_dir}/bin/activate\n"
@@ -329,7 +323,7 @@ def gen_launch_script(cmd: list[str], output_dir: Path, venv_python: str) -> Pat
 def prepare_training_run(cfg: TrainConfig, venv_python: str | None = None) -> dict:
     """One-shot: create output dir, write TOML + cache scripts + train script.
 
-    Cross-platform [2026-06-09]: emits .bat on Windows, .sh on Unix.
+    Cross-platform: emits .bat on Windows, .sh on Unix.
     Default venv_python is platform-aware (Scripts/ on Windows, bin/ on Unix)
     and uses sys.executable as the fallback so the BASI_VENV_PYTHON env var
     can override on dev machines.
@@ -351,7 +345,7 @@ def prepare_training_run(cfg: TrainConfig, venv_python: str | None = None) -> di
         py_exe = bin_dir / "python.exe"
         cache_script_path = output_dir / "cache.bat"
         lines = ["@echo off",
-                 f"REM BASI WAN K3N0B1 cache precompute for: {cfg.lora_name}",
+                 f"REM BASI WAN KENOBI cache precompute for: {cfg.lora_name}",
                  "set PYTHONUTF8=1",          # musubi's bilingual prints vs cp1252
                  "set PYTHONIOENCODING=utf-8",
                  f"cd /d \"{MUSUBI_ROOT}\""]
@@ -365,7 +359,7 @@ def prepare_training_run(cfg: TrainConfig, venv_python: str | None = None) -> di
         venv_dir = bin_dir.parent
         cache_script_path = output_dir / "cache.sh"
         lines = ["#!/bin/bash",
-                 f"# BASI WAN K3N0B1 cache precompute for: {cfg.lora_name}",
+                 f"# BASI WAN KENOBI cache precompute for: {cfg.lora_name}",
                  "set -e", f"cd {MUSUBI_ROOT}",
                  f"source {venv_dir}/bin/activate"]
         for c in cache_cmds:

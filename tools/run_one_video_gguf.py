@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GGUF-loaded subprocess wrapper.
 
-Status: SCAFFOLD (T2.1-I, 2026-06-01). The full GGUF loader integration
+Status: SCAFFOLD. The full GGUF loader integration
 is multi-hour work to adapt city96's ComfyUI nodes (vendored at
 `tools/gguf_vendor/`) to a bare PyTorch context. This file documents
 the integration path and provides argparse / env scaffolding so the
@@ -51,16 +51,15 @@ _PROC_T0 = time.time()  # process-start reference for [startup-phase] prints
 # Match run_one_video.py's CUDA env setup before any CUDA-touching import.
 os.environ.setdefault("CUBLASLT_WORKSPACE_SIZE", "268435456")  # 256 MB
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":16384:16")
-# 2026-06-08 Windows port: `expandable_segments:True` is silently NON-FUNCTIONAL
+# Windows port: `expandable_segments:True` is silently NON-FUNCTIONAL
 # on Windows pip wheels — gated behind PYTORCH_C10_DRIVER_API_SUPPORTED, absent
 # in pip builds (cu128 distributions included). We saw the warning at startup
 # and ignored it. On Windows we instead use garbage_collection_threshold to
 # reclaim cached blocks before OOM. DO NOT add max_split_size_mb — measured
-# 2026-06-02 at p720_33f to add catastrophic per-Linear overhead (step 1: 798s
+# at p720_33f to add catastrophic per-Linear overhead (step 1: 798s
 # vs 109s baseline; the cap forces per-call allocator bookkeeping that scales
 # badly at large M).
 # On Linux/WSL2: expandable_segments works correctly; keep the documented recipe.
-# See memory/windows_vae_oom_root_cause_2026-06-08.md for the full analysis.
 if os.name == "nt":
     os.environ.setdefault(
         "PYTORCH_CUDA_ALLOC_CONF",
@@ -115,7 +114,7 @@ ap.add_argument("--block-swap-n", type=int, default=-1,
                      "follows weight/bias/LoRA across .to()). -1 (default) = no swap. "
                      "0 = aggressive; 4 = typical 24GB-card config; pick based on "
                      "free VRAM at shape.")
-# [2026-06-09] These six become per-request inputs in --serve mode. Keep
+# These six become per-request inputs in --serve mode. Keep
 # required at CLI time for the legacy path; validate manually after parsing.
 ap.add_argument("--prompt", default=None)
 ap.add_argument("--width", type=int, default=None)
@@ -159,11 +158,10 @@ os.environ.setdefault("BASIWAN_TAEHV_PARALLEL", "0")
 os.environ.setdefault("BASIWAN_RMS_BF16", "1")
 os.environ.setdefault("BASIWAN_LN_BF16", "1")
 
-# [2026-06-09 worker fix W1] Snapshot the user/start.js-provided VAE config
+# Snapshot the user/start.js-provided VAE config
 # BEFORE _do_one_generation mutates the env for shape-specific auto-gating.
 # Restored on every request so a prior p720 request can't silently change
-# the VAE path for a subsequent p480 request. See
-# memory/persistent_worker_ship_2026-06-09.md.
+# the VAE path for a subsequent p480 request.
 _INITIAL_BASIWAN_TAEHV_VAE = os.environ.get("BASIWAN_TAEHV_VAE")
 _INITIAL_BASIWAN_VAE_TILING = os.environ.get("BASIWAN_VAE_TILING")
 os.environ.setdefault("BASIWAN_NO_VAE_COMPILE", "1")
@@ -173,7 +171,7 @@ import gc, json, time, random  # noqa: E402
 import torch  # noqa: E402
 import _basiwan_deep_profile as _dp  # noqa: E402  (no-op when env gate off)
 
-# [2026-06-05 audit GG/GG2/HH/multi-prompt REJECTED] TF32 + cudnn.benchmark
+# TF32 + cudnn.benchmark
 # kept opt-in. Multi-prompt verification (5 prompts × {notf32, tf32}):
 #   cat_boxing  +0.0040 composite (single-prompt anomaly that drove initial GG)
 #   cat_surf    +0.0007
@@ -188,7 +186,7 @@ if os.environ.get("BASIWAN_TF32") == "1":
     torch.backends.cuda.matmul.allow_tf32 = True
 if os.environ.get("BASIWAN_CUDNN_BENCH") == "1":
     torch.backends.cudnn.benchmark = True
-# 2026-06-08 Windows port: cudnn.deterministic forces cuDNN to pick smaller-
+# Windows port: cudnn.deterministic forces cuDNN to pick smaller-
 # workspace conv plans (excludes high-workspace Winograd / FFT variants).
 # This is the per-op equivalent of `expandable_segments` — instead of growing
 # segments to fit large plans (which Windows can't do), shrink the plans to
@@ -223,7 +221,7 @@ def _parse_lightning_lora(lora_path: Path) -> dict[str, dict[str, torch.Tensor]]
 def _walk_module(expert, dotted_name: str):
     """Walk `expert.{dotted_name}`, supporting numeric attrs for nn.Sequential.
 
-    [2026-06-11 #391] FFN-chunk wrappers (_ChunkedFFN / fused) store the
+    FFN-chunk wrappers (_ChunkedFFN / fused) store the
     original Sequential as `.orig`, so after pipe build `blocks.N.ffn` is a
     wrapper, not subscriptable — a numeric component like `ffn.0` would raise
     `TypeError: '_ChunkedFFN' object is not subscriptable`. Boot-time attach
@@ -298,7 +296,7 @@ def _is_lora_safetensors(path: Path) -> bool:
 
 
 def _load_full_model_weights(expert, model_path: Path) -> int:
-    """[I-1.1 — 2026-06-03] Load a FULL safetensors model into a
+    """Load a FULL safetensors model into a
     BareGGMLLinear-wrapped expert, replacing the Q4_K weight with the
     full BF16 weights. Used for the Lightning-4 250928-dyno-high variant
     which ships as a full-parameter checkpoint (28.6 GB) instead of a
@@ -360,7 +358,7 @@ def _attach_lightning_forward_lora(expert, lora_path: Path, strength: float = 1.
         if not hasattr(mod, "lora_scale"): continue
         rank = down.shape[0]
         scale = float(alpha.item() if alpha is not None else rank) / rank
-        # [2026-06-02 revised] Store as BF16. Originally FP32 to preserve
+        # Store as BF16. Originally FP32 to preserve
         # precision through an FP32 delta matmul; but the delta matmul is
         # now BF16 (with cuBLAS internal FP32 accumulation) to keep the
         # peak (M, N) transient at 211 MB instead of 423 MB — necessary
@@ -368,7 +366,7 @@ def _attach_lightning_forward_lora(expert, lora_path: Path, strength: float = 1.
         # BF16 LoRA storage halves total resident LoRA footprint from
         # ~3.6 GB to ~1.8 GB across both experts, which is the difference
         # between OOM-at-FFN[0] and steady-state diffusion.
-        # [2026-06-05 drift-bisect] BASIWAN_LORA_FP32=1 keeps LoRA tensors
+        # BASIWAN_LORA_FP32=1 keeps LoRA tensors
         # in FP32 instead of casting to BF16. Tests whether BF16 LoRA precision
         # is the source of the today-vs-June2 imaging_quality regression
         # (-0.137 imaging across all today's variants vs June 2 ref).
@@ -378,7 +376,7 @@ def _attach_lightning_forward_lora(expert, lora_path: Path, strength: float = 1.
         else:
             mod.lora_down = down.to(torch.bfloat16).detach()
             mod.lora_up = up.to(torch.bfloat16).detach()
-        # [2026-06-09 W2] Store the rank-derived base scale separately so
+        # Store the rank-derived base scale separately so
         # _apply_lora_strength_to_pipe() can re-multiply at request time.
         # Without this, lora_scale fuses the user-tunable strength into the
         # immutable intrinsic scale, blocking per-request strength control.
@@ -405,7 +403,7 @@ def _apply_lora_strength_to_pipe(pipe, strength: float) -> int:
 
 
 def _detach_all_forward_lora(pipe) -> int:
-    """[2026-06-11 #391] Clear forward-attached LoRA from EVERY module on both
+    """Clear forward-attached LoRA from EVERY module on both
     experts. Required before set_lora swaps in a new combo: re-attach only
     overwrites modules the NEW file targets, so modules the OLD combo touched
     but the new one doesn't would keep stale deltas. The forward gate is
@@ -428,7 +426,7 @@ def _detach_all_forward_lora(pipe) -> int:
 
 
 def _fixup_lora_device(pipe) -> int:
-    """[2026-06-11 #391] Move each attached LoRA tensor onto its module's
+    """Move each attached LoRA tensor onto its module's
     current device. Blocks [:block_swap_n] and non-block children are pinned
     GPU-resident at install and never `.to()` again, so a CPU-side attach
     leaves their LoRA on CPU — the forward self-heals per call (an H2D every
@@ -462,7 +460,7 @@ def _fixup_lora_device(pipe) -> int:
 
 
 def _set_lora_on_pipe(pipe, lora_dir, strength: float = 1.0) -> dict:
-    """[2026-06-11 #391] Hot-swap the forward LoRA on a live serve worker
+    """Hot-swap the forward LoRA on a live serve worker
     without a restart. lora_dir=None clears all LoRA (revert to plain GGUF);
     otherwise attaches lora_dir/{low,high}_noise_model.safetensors. The combo
     has user strength baked in (alpha=rank → intrinsic scale 1.0), so
@@ -489,7 +487,7 @@ def _build_pipe_gguf(gguf_high: Path, gguf_low: Path, base_dir: Path,
     """Build WanT2V with GGUF experts. Mirrors prod_shape_bench._build_pipe
     structure but replaces the FP8 safetensors load with GGUF state-dict
     + BareGGMLLinear wrapping for runtime dequant."""
-    # [S4] S2V is a SEPARATE engine (WanS2V, single-expert) with its own generate
+    # S2V is a SEPARATE engine (WanS2V, single-expert) with its own generate
     # signature. build_s2v_pipe_gguf does the full setup (prepack+cache, ffn-chunk,
     # block-swap, tiled VAE), so main() must SKIP its own ffn-chunk/block-swap
     # installs for s2v (gated below). Widescreen needs tiled enc+dec -> force it on.
@@ -535,7 +533,7 @@ def _build_pipe_gguf(gguf_high: Path, gguf_low: Path, base_dir: Path,
     try:
         # i2v-A14B differs only in boundary (0.900), sample_shift (5.0) and
         # guide defaults — same T5/VAE/dims; WanT2V consumes it generically.
-        # [#388] VACE-Fun is a T2V-derived model (same T5/VAE/boundary, +control
+        # VACE-Fun is a T2V-derived model (same T5/VAE/boundary, +control
         # branch) — use the t2v pipe config; the vace submodules are injected
         # into the per-expert mcfg below.
         _cfg_key = "t2v" if model_type == "vace" else model_type
@@ -558,7 +556,7 @@ def _build_pipe_gguf(gguf_high: Path, gguf_low: Path, base_dir: Path,
         setattr(pipe, name, None)
         gc.collect()
         # QuantStack/Wan2.2-T2V-A14B-GGUF uses bare WanModel naming (no
-        # "model." or "model.diffusion_model." prefix) — verified 2026-06-01,
+        # "model." or "model.diffusion_model." prefix) — verified,
         # 1095/1095 key match. handle_prefix=None is the right value.
         _t_sd = time.time()
         sd, extra = gguf_sd_loader(str(gguf_path), handle_prefix=None)
@@ -586,7 +584,7 @@ def _build_pipe_gguf(gguf_high: Path, gguf_low: Path, base_dir: Path,
         with cfg_path.open() as f:
             mcfg = json.load(f)
         mcfg = {k: v for k, v in mcfg.items() if not k.startswith("_")}
-        # [#388] VACE-Fun: the merged QuantStack GGUF carries 8 vace_blocks +
+        # VACE-Fun: the merged QuantStack GGUF carries 8 vace_blocks +
         # vace_patch_embedding inline (verified) but ships no config.json, so the
         # base T2V mcfg is missing the vace config. Inject vace_layers (official
         # Wan2.2-Fun-VACE-A14B config: [0,5,10,15,20,25,30,35]) + vace_in_dim=96
@@ -694,22 +692,21 @@ def _build_pipe_gguf(gguf_high: Path, gguf_low: Path, base_dir: Path,
 
         expert.eval().requires_grad_(False)
 
-        # [2026-06-02] Eagerly pre-pack BASIWAN Q4_K/Q6_K weights while the
+        # Eagerly pre-pack BASIWAN Q4_K/Q6_K weights while the
         # expert is still entirely on CPU. The lazy-pack-on-first-forward
         # path pays a heavy D2H staging cost once block-swap has put the
         # block on GPU under VRAM pressure — measured: OOM at FFN[0] of
         # block 0 on RTX 4090 24 GB at p480_17f after only 8 successful
         # packs. CPU-side packing is bandwidth-trivial and avoids the
         # transient CUDA workspace need.
-        # 2026-06-05 audit AA/BB/CC: pack cache root-caused. The earlier
-        # "output-correctness bug" was the cache WRITE to /mnt/d (9p mount)
-        # corrupting in-memory tensor state during torch.save. Writing to
-        # ext4 (~/.cache/marlin_packs via _env.sh BASIWAN_PACK_CACHE_DIR)
-        # produces bit-identical output to fresh-pack. Cache now safe to
-        # enable by default; see drift_resolved_pool + audit memos.
+        # The pack cache writes to a local disk path (~/.cache/marlin_packs,
+        # overridable via BASIWAN_PACK_CACHE_DIR in _env.sh) and produces
+        # bit-identical output to a fresh pack. Avoid a network- or 9p-mounted
+        # cache dir: writing packed tensors there can corrupt in-memory tensor
+        # state during torch.save. Safe to enable by default.
         from gguf_vendor.bare_gguf import prepack_basiwan_weights, basiwan_kernel_available
         t0 = time.time()
-        # [#400/W14] Prepack produces the CUDA kernel's packed layout AND frees the
+        # Prepack produces the CUDA kernel's packed layout AND frees the
         # raw Q4/Q6 weight. When the kernel is UNAVAILABLE (AMD ROCm / Apple MPS /
         # no build toolchain) or BASIWAN_FORCE_DEQUANT=1, we must NOT prepack — the
         # pure-torch dequant fallback needs the raw weight retained.
@@ -823,8 +820,7 @@ def _setup_async_ring_buffer(pipe, swap_n):
 
     Called from main() AFTER _install_block_swap_gguf so the install
     function's bytecode stays clean of ring-buffer references (which on
-    PyTorch 2.11+cu130/WSL2 trigger a bogus install-time CUDA OOM, see
-    wsl_async_block_swap_breakthrough_2026-06-08.md).
+    PyTorch 2.11+cu130/WSL2 trigger a bogus install-time CUDA OOM).
     """
     # Lazy imports — these modules import only torch + stdlib.
     import sys as _sys
@@ -849,8 +845,8 @@ def _setup_async_ring_buffer(pipe, swap_n):
     slot_bytes = ((slot_bytes + (1 << 20) - 1) // (1 << 20)) * (1 << 20)
     # Probe how many slots we can safely hold. Cap default varies by
     # platform: WSL2 dxgkrnl has a count-based descriptor-table cap that
-    # trips with ~50 small cudaHostRegister calls per block even at K=1
-    # (see ring_buffer_root_cause_2026-06-08.md). On native Linux /
+    # trips with ~50 small cudaHostRegister calls per block even at K=1.
+    # On native Linux /
     # native Windows / macOS this cap doesn't exist, so K=4 (~1 GB
     # pinned) is fine. Pinokio targets all three native platforms so
     # the ring path is the ship; WSL2 is a local-dev fallback.
@@ -882,7 +878,7 @@ def _pin_block_to_cpu_call(block):
     No copy, no new allocation — just kernel page-flag flips on existing
     storage. NOTE: BareGGMLLinear plain attrs are walked via duck-typing
     (hasattr checks) to avoid a from-import that triggered an install-time
-    OOM trigger on PyTorch 2.11+cu130/WSL2 (bisected 2026-06-07)."""
+    OOM trigger on PyTorch 2.11+cu130/WSL2."""
     _cudart = torch.cuda.cudart()
     def _try_register(t):
         if t is None or t.device.type != 'cpu' or t.is_pinned():
@@ -914,7 +910,7 @@ def _pin_block_to_cpu_call(block):
 def _basiwan_swap_forward(pipe, blk, idx, n, n_blocks, exp_name, blocks_ref,
                           swap_dev, off_dev, orig_fwd, args, kwargs, async_mode):
     """Unified block-swap forward — dispatched from the make_wrap closure.
-    Module-level so the closure stays minimal (avoids 2026-06-07 bytecode-
+    Module-level so the closure stays minimal (avoids bytecode-
     density install-time OOM trigger on PyTorch 2.11+cu130/WSL2)."""
     if not async_mode:
         if idx >= n:
@@ -1004,7 +1000,7 @@ def _install_block_swap_gguf(pipe, n: int) -> None:
     GPU permanently; keep blocks[:n] resident; offload blocks[n:] to CPU
     and swap them in/out around each forward call.
 
-    [TEST 1 2026-06-07] Adding the case-B bytecode trigger (LOAD_GLOBAL on
+    Adding the case-B bytecode trigger (LOAD_GLOBAL on
     _pin_block_to_cpu_call inside a local def) to see if the function is
     actually invoked before the OOM, or if its mere bytecode reference
     triggers something else. Standalone repro (without Wan/GGUF) does NOT
@@ -1014,7 +1010,7 @@ def _install_block_swap_gguf(pipe, n: int) -> None:
 
     # Async mode gate. cudaHostRegister-pinned async block-swap measured
     # 24% per-step gain. Keep make_wrap closures SMALL to avoid the
-    # 2026-06-07 bytecode-density trigger that produced bogus CUDA OOM
+    # bytecode-density trigger that produced bogus CUDA OOM
     # on the SECOND expert's first non-block submodule .to(cuda) when
     # closures held inline async stream/event references.
     _async_mode = (os.environ.get("BASIWAN_BLOCK_SWAP_ASYNC") == "1") and torch.cuda.is_available()
@@ -1054,7 +1050,7 @@ def _install_block_swap_gguf(pipe, n: int) -> None:
             block._block_idx = i
             # Closure body is intentionally minimal — dispatches to a
             # module-level function. Keeps make_wrap closures small (avoids
-            # the 2026-06-07 bytecode-density trigger that produced bogus
+            # the bytecode-density trigger that produced bogus
             # CUDA OOM at install on PyTorch 2.11+cu130/WSL2).
             # Default-arg capture preserves the closure-bug fix for MoE
             # boundary (Ruff B023 / pylint W0640 would catch the pattern).
@@ -1074,7 +1070,7 @@ def _install_block_swap_gguf(pipe, n: int) -> None:
           f"{counts.get('low_noise_model', 0) - n}+{counts.get('high_noise_model', 0) - n} "
           f"swap blocks", flush=True)
 
-    # [2026-06-02 run #7] Patch _prepare_model_by_name to re-enforce block-swap
+    # Patch _prepare_model_by_name to re-enforce block-swap
     # residency after Wan's boundary-crossing `to(self.device)`. The pipe moves
     # the entire incoming expert to GPU at MoE boundary (step 2→3 for
     # Lightning-4), defeating block-swap for one step. Each step thereafter
@@ -1116,7 +1112,7 @@ _DEPTH_MODEL_CACHE = {}
 
 
 def _get_depth_model():
-    """[#388] Lazy-load Depth-Anything-V2-Small once per worker, kept on CPU and
+    """Lazy-load Depth-Anything-V2-Small once per worker, kept on CPU and
     run on CPU. The Dinov2 backbone uses raw nn.Linear; once the BASIWAN GGUF
     pipe is resident it has set deterministic/cuBLAS state that makes those
     F.linear calls trip the cuBLASLt workspace-heuristic bug (bogus 256 GiB
@@ -1154,7 +1150,7 @@ def _do_sliding_generation(pipe, size_configs, *, prompt, width, height,
                            window, steps, guide, out_pt, out_meta, video,
                            denoise_strength, overlap=9, discard=4,
                            color_match=1.0):
-    """[#387] Any-length restyle via overlapping windows (Wan2GP sequential).
+    """Any-length restyle via overlapping windows (Wan2GP sequential).
     Loads the FULL source, tiles into <=`window`-frame windows sharing an
     `overlap` seam, SDEdit-restyles each with the previous window's styled tail
     injected into the denoise loop (continuity), LAB color-matches the seam, and
@@ -1289,7 +1285,7 @@ class _VramPeak:
 
 def _do_one_generation_s2v(pipe, *, prompt, width, height, frames, out_pt, out_meta,
                            image, audio):
-    """[S4] One S2V (audio-driven talking character) generation via WanS2V.generate.
+    """One S2V (audio-driven talking character) generation via WanS2V.generate.
     Enforces the validated S2V_RECIPE (steps 40 / guide 4.5 / shift 3.0 — not the
     t2v Lightning defaults). width*height is the max pixel AREA (get_gen_size honors
     the reference aspect). image = reference character, audio = driving wav.
@@ -1299,7 +1295,7 @@ def _do_one_generation_s2v(pipe, *, prompt, width, height, frames, out_pt, out_m
         raise RuntimeError("s2v requires both 'image' (reference) and 'audio' (wav)")
     _rec = _S.S2V_RECIPE
     _infer = frames if frames and frames > 0 else _rec["infer_frames"]
-    # [S10] RESIDENCY-AWARE per-chunk window cap (the rule-#9-correct design). The
+    # RESIDENCY-AWARE per-chunk window cap (the rule-#9-correct design). The
     # DiT-step activation scales ~linearly with tokens = infer_frames * megapixels
     # (K_ACT ~= 0.169 GB/(frame*Mpix), sweep tools/_s2v_720p_window_sweep.py) and must
     # fit in the FREE VRAM left after this process's resident weights AND anything else
@@ -1333,7 +1329,7 @@ def _do_one_generation_s2v(pipe, *, prompt, width, height, frames, out_pt, out_m
                   f"(residency-aware: {_free_gb:.1f}GB free, {_act_budget:.1f}GB for "
                   f"activation; chunks chain for length)", flush=True)
             _infer = _safe
-    # [S10] S2V output resolution is gated by the REFERENCE image:
+    # S2V output resolution is gated by the REFERENCE image:
     # get_size_less_than_area keeps a ref SMALLER than max_area at its own (small)
     # size and only pads -- so a small reference yields a small video no matter the
     # selected resolution. To honor the user's resolution choice, upscale a too-small
@@ -1400,13 +1396,13 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
 
     Used by both legacy CLI path and --serve worker loop.
     """
-    # [S4] S2V is a separate engine with a different generate signature -> dedicated
+    # S2V is a separate engine with a different generate signature -> dedicated
     # path. image = reference character, audio = driving track.
     if args.model_type == "s2v":
         return _do_one_generation_s2v(
             pipe, prompt=prompt, width=width, height=height, frames=frames,
             out_pt=out_pt, out_meta=out_meta, image=image, audio=audio)
-    # [2026-06-09] Reset VAE env vars to their worker-start values BEFORE the
+    # Reset VAE env vars to their worker-start values BEFORE the
     # auto-gate re-evaluates. Without this, a prior p720 request leaves
     # BASIWAN_TAEHV_VAE="0" and BASIWAN_VAE_TILING="1" set, which then blocks
     # the auto-gate guard on a subsequent p480 request and silently uses the
@@ -1420,7 +1416,7 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
     _restore("BASIWAN_TAEHV_VAE", _INITIAL_BASIWAN_TAEHV_VAE)
     _restore("BASIWAN_VAE_TILING", _INITIAL_BASIWAN_VAE_TILING)
 
-    # [2026-06-09 W2] Per-request LoRA strength. None ⇒ leave whatever was
+    # Per-request LoRA strength. None ⇒ leave whatever was
     # baked at pipe-build time (legacy CLI path uses args.lora_strength as
     # the baked value). When called via the worker --serve path with a
     # per-request lora_strength, override here so the UI slider is honored.
@@ -1430,7 +1426,7 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
             print(f"[runner-gguf] LoRA strength set to {lora_strength} on {_n} modules", flush=True)
 
     # Auto-gate at request time (per-shape). The same logic that lived inline
-    # in main() prior to 2026-06-09; moving it here means a worker serving
+    # in main() prior to; moving it here means a worker serving
     # multiple shapes will re-evaluate on each request.
     if (torch.cuda.is_available()
             and not os.environ.get("BASIWAN_TAEHV_VAE")  # respect explicit override
@@ -1448,7 +1444,7 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
                   f"keeping TAEHV at p720", flush=True)
 
     size = size_configs.get(f"{width}*{height}", (width, height))
-    # [2026-06-09 #370] I2V conditioning image (continuation). Only valid
+    # I2V conditioning image (continuation). Only valid
     # when the worker was started with --model-type i2v (in_dim=36 experts);
     # on a T2V worker the patch_embedding concat would shape-error, so fail
     # loud and early with an actionable message instead.
@@ -1460,7 +1456,7 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
                 "restart the worker with the I2V GGUF pair")
         from PIL import Image as _PILImage
         _img = _PILImage.open(image).convert("RGB")
-    # [2026-06-11 #385] SDEdit V2V restyle source. Decode the upload to a
+    # SDEdit V2V restyle source. Decode the upload to a
     # (3, frames, H, W) pixel tensor in [-1,1], resized to the request shape
     # and fit to `frames` (fail loud if shorter — caller should pre-trim).
     # T2V worker only; restyle rides content in the latent, needs no I2V
@@ -1485,7 +1481,7 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
                 mode="bicubic", align_corners=False).transpose(0, 1)
         _vid_src = _vid_src.clamp_(-1, 1)
 
-    # [#388] VACE depth-control restyle: load the source, extract its depth as
+    # VACE depth-control restyle: load the source, extract its depth as
     # the control video, and ENFORCE the validated quality recipe (steps/guide/
     # shift pulled from basi.vace.VACE_DEPTH_RECIPE — the single source of truth
     # so the 0.973-depth-lock settings can't silently drift to the broken fast
@@ -1494,7 +1490,7 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
     _vace_shift = None
     _vace_mask = None
     if vace_edit:
-        # [#389] Keyframe-anchored editing: build the VACE (guide, mask) from the
+        # Keyframe-anchored editing: build the VACE (guide, mask) from the
         # edited anchor frames at their positions; generate() hard-locks those
         # anchor latents each step so the edits are enforced + propagate. Enforce
         # the same quality recipe as depth (50/guide5/shift3). anchors-only (no
@@ -1547,14 +1543,14 @@ def _do_one_generation(pipe, size_configs, *, prompt, width, height, frames,
         _vace_shift = _vmod.VACE_DEPTH_RECIPE["shift"]
 
     # Seed: a >=0 value is reproducible; <0 (the UI's "-1 = random") draws a fresh seed per
-    # call so repeated clicks vary. (Previously hardcoded 0 -> every generation was identical.)
+    # call so repeated clicks vary (a fixed seed would make every generation identical).
     _seed = int(seed) if int(seed) >= 0 else random.randint(0, 2**31 - 1)
     torch.manual_seed(_seed)
     _vp = _VramPeak().start()
     t0 = time.time()
     _shift = (_vace_shift if _vace_shift is not None
               else float(os.environ.get("BASIWAN_SHIFT", "5.0")))
-    # [#388] VACE runs offload_model=False (everything resident). The validated
+    # VACE runs offload_model=False (everything resident). The validated
     # path used False and fit on 24GB at p480_17f; offload_model=True swaps
     # experts CPU<->GPU mid-generate, fragmenting the allocator enough to trip
     # the cuBLASLt F.linear workspace-heuristic bug (the bogus 256 GiB alloc).
@@ -1626,9 +1622,9 @@ def _serve_loop(pipe, size_configs):
     _resident = (round(torch.cuda.memory_reserved() / 1024**3, 2)
                  if torch.cuda.is_available() else None)
     _emit_runner_event("ready", resident_gb=_resident)
-    _prewarm_joined = False  # [#380] block the first gen on the mmap pre-warm
-    _combo_active = [False]   # [#391] mutable flag: a user-LoRA combo is loaded
-    # [#388] runtime-scalable flag: the active LoRA is USER-ONLY (no Lightning
+    _prewarm_joined = False  # block the first gen on the mmap pre-warm
+    _combo_active = [False]   # mutable flag: a user-LoRA combo is loaded
+    # runtime-scalable flag: the active LoRA is USER-ONLY (no Lightning
     # entangled in the rank-concat), so request-time lora_strength can scale the
     # single LoRA exactly. For a Lightning+user combo this must stay False —
     # one lora_scale can't separate the two, so strength is baked at build and
@@ -1657,7 +1653,7 @@ def _serve_loop(pipe, size_configs):
             _emit_runner_event("pong", id=req_id, resident_gb=_r)
             continue
         if cmd == "set_lora":
-            # [#391] Hot-swap the user LoRA combo on the live worker. No
+            # Hot-swap the user LoRA combo on the live worker. No
             # restart; ~0.3 s (load_file + attach + device fixup). When a
             # combo is active, request-time lora_strength is pinned to 1.0
             # (user strength is baked into the combo) — _combo_active tells
@@ -1670,7 +1666,7 @@ def _serve_loop(pipe, size_configs):
                 _res = _set_lora_on_pipe(pipe, _dir,
                                          float(_a.get("strength", 1.0)))
                 _combo_active[0] = _dir is not None
-                # [#388] user-only LoRA -> request-time strength is honored, not
+                # user-only LoRA -> request-time strength is honored, not
                 # pinned (no Lightning to entangle). Default False = the safe
                 # baked/pinned behaviour for Lightning+user combos.
                 _combo_runtime_scalable[0] = bool(
@@ -1687,7 +1683,7 @@ def _serve_loop(pipe, size_configs):
             continue
         a = req.get("args", {})
         try:
-            # [#380] The mmap pre-warm scan (started at pack-load, fire-and-
+            # The mmap pre-warm scan (started at pack-load, fire-and-
             # forget) is still streaming the ~19 GB pack off disk when `ready`
             # fires. Joining it BEFORE the first forward pass converts a
             # hidden random-page-fault storm (observed 1000 s+ when a duplicate
@@ -1712,7 +1708,7 @@ def _serve_loop(pipe, size_configs):
             _emit_runner_event("started", id=req_id,
                                prompt_first40=(a.get("prompt", "") or "")[:40])
             if a.get("sliding"):
-                # [#387] Any-length restyle: tile into overlapping windows.
+                # Any-length restyle: tile into overlapping windows.
                 # SDEdit defaults (8-step mid-entry, denoise 0.6) match the #385
                 # single-window restyle recipe.
                 wall, shape = _do_sliding_generation(
@@ -1737,7 +1733,7 @@ def _serve_loop(pipe, size_configs):
                 guide=a.get("guide", 1.0), seed=a.get("seed", 0),
                 out_pt=a["out"], out_meta=a["meta"],
                 clip_t=a.get("clip_t", False),
-                # [#391/#388] A Lightning+user combo bakes user strength in
+                # A Lightning+user combo bakes user strength in
                 # (alpha=rank → scale 1.0) and one lora_scale can't separate the
                 # two, so pin to 1.0. A USER-ONLY LoRA (#388, runtime_scalable)
                 # is a single LoRA — request strength scales it exactly, so honor
@@ -1749,11 +1745,11 @@ def _serve_loop(pipe, size_configs):
                 audio=a.get("audio"),
                 video=a.get("video"),
                 denoise_strength=a.get("denoise_strength", 1.0),
-                # [#388] VACE depth-control restyle fields.
+                # VACE depth-control restyle fields.
                 vace_depth=a.get("vace_depth", False),
                 vace_context_scale=a.get("vace_context_scale", 1.0),
                 vace_end_percent=a.get("vace_end_percent", 1.0),
-                # [#389] VACE keyframe-anchored editing fields.
+                # VACE keyframe-anchored editing fields.
                 vace_edit=a.get("vace_edit", False),
                 anchor_images=a.get("anchor_images"),
                 anchor_positions=a.get("anchor_positions"))
@@ -1785,7 +1781,7 @@ def _serve_loop(pipe, size_configs):
 
 
 def main():
-    # [#394] Simulate a smaller card: cap the caching allocator to a fraction of
+    # Simulate a smaller card: cap the caching allocator to a fraction of
     # total VRAM so per-tier OOM walls can be probed on one GPU. FIT/NO-FIT gate
     # only — does NOT reproduce WDDM shared-RAM spill or real-card step times, so
     # treat a pass as "fits (soft)" and any speed as estimated. No-op when unset.
@@ -1804,7 +1800,7 @@ def main():
                                           args.base_dir, args.model_type)
     print(f"[runner-gguf] pipe ready in {time.time() - _t_start:.1f}s", flush=True)
 
-    # [#388] VACE runs offload_model=False (everything resident, fits in ~23 GB
+    # VACE runs offload_model=False (everything resident, fits in ~23 GB
     # on 24 GB at p480_17f) so it never needs chunked-FFN's memory savings — and
     # chunking MEASURES catastrophically slow on the VACE model: 44.8 s/it with
     # chunk=4096 (80 blocks wrapped) vs 7.9 s/it unchunked at 832x480x17f, a 5.7x
@@ -1833,10 +1829,10 @@ def main():
                 and torch.cuda.is_available()):
             _setup_async_ring_buffer(pipe, args.block_swap_n)
 
-    # [Tier 1.3 — R-1.3 2026-06-03] Auto-on tiled-full-VAE for 24GB+ cards at
+    # Auto-on tiled-full-VAE for 24GB+ cards at
     # p720_17f / p720_33f. p720_17f measured 16.31 GB peak; p720_33f predicted
     # ~20.9 GB via linear-frame scaling. p720_49f predicted ~25 GB (OOM on 24GB
-    # leaving headroom); p720_81f FALSIFIED 2026-06-03. Sub-720p shapes keep
+    # leaving headroom); p720_81f FALSIFIED. Sub-720p shapes keep
     # TAEHV default — preview shapes don't need full-VAE imaging quality.
     if (torch.cuda.is_available()
             and not os.environ.get("BASIWAN_TAEHV_VAE")  # respect explicit override

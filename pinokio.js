@@ -2,11 +2,29 @@
 // (fluxgym / cogstudio canonical shape): hardware-constraint description,
 // schema version "3.7", full state-machine menu including Reset+confirm
 // and Save Disk Space dedup.
+//
+// PREREQUISITES (`pre`): Pinokio shows this list as a guided Prerequisites
+// screen BEFORE the install screen (PINOKIO.md §"Display prerequisite apps").
+// `requires: { bundle: "ai" }` in install.js already pulls Pinokio's bundled
+// toolchain — which on Windows INCLUDES Visual Studio — so for most users the
+// MSVC C++ compiler (cl.exe) is already present. But the Wan GGUF path compiles
+// a small CUDA kernel on first generation (tools/build_kernel.py) and that needs
+// cl.exe; on machines where the bundled VS is absent/partial it fails (non-fatal:
+// it retries each gen). So we surface VS C++ Build Tools as a Windows-only `pre`
+// item — a one-click guided install before app install for anyone the bundle
+// didn't cover. Linux/macOS need no such prereq (gcc/clang from the bundle).
+const _WIN = process.platform === "win32";
 module.exports = {
   version: "3.7",
-  title: "basiwan",
+  title: "BASI WAN KENOBI",
   description: "[NVIDIA Only] Wan2.2 video Studio (text/image-to-video, restyle, keyframe, talking-character S2V) + LoRA Gym + MOVA joint audio+video. From 12GB VRAM.",
   icon: "icon.png",
+  pre: _WIN ? [{
+    icon: "icon.png",
+    title: "Visual Studio C++ Build Tools (Windows)",
+    description: "Provides the MSVC C++ compiler (cl.exe) used to build the optimized CUDA kernel for Wan video generation. Pinokio's bundled toolchain usually already includes this — install only if generation reports a missing compiler. When installing, check the \"Desktop development with C++\" workload.",
+    href: "https://visualstudio.microsoft.com/visual-cpp-build-tools/"
+  }] : undefined,
   menu: async (kernel, info) => {
     const installed = info.exists("env");
     const installing = info.running("install.js");
@@ -23,11 +41,9 @@ module.exports = {
 
     if (starting) {
       if (local && local.url) {
-        // [2026-06-09] popout: true was opening the URL in the OS
-        // browser via Electron shell.openExternal (per Pinokio
-        // browser-popout-surface.js). Omit it so the menu item loads
-        // local.url in Pinokio's embedded iframe instead — matches the
-        // pinokiofactory/wan + pinokiofactory/forge canonical. Pinokio
+        // No popout: load local.url in Pinokio's embedded iframe (popout
+        // would open it in the OS browser via Electron shell.openExternal).
+        // Matches the pinokiofactory/wan + forge canonical. Pinokio
         // strips X-Frame-Options + frame-ancestors from the response
         // headers (full.js:3212-3250) so Gradio's CSP can't block the
         // embed. default: true makes "Open Web UI" the auto-launched

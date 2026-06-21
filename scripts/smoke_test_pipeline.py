@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BASI WAN K3N0B1 — pipeline smoke test (no GPU training run).
+"""BASI WAN KENOBI — pipeline smoke test (no GPU training run).
 
 Exercises the full BASI flow against a single sample clip:
   1. Ingest a video into a throwaway workspace

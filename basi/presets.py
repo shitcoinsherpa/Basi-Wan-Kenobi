@@ -56,29 +56,27 @@ PRESETS: dict[str, Preset] = {
     "16g": Preset(
         name="16G (RTX 4060Ti 16GB / 4080)",
         vram_gb=16, blocks_to_swap=20, network_dim=32, network_alpha=16,
-        # alpha=dim/2 [2026-06-09]: gives effective LoRA scale 0.5, so
-        # inference lora_strength ≈ 1.0 lands at the trained behavior.
-        learning_rate=2e-4,  # kohya canonical for Wan; was 1e-4 (too conservative)
+        # alpha=dim/2: gives effective LoRA scale 0.5, so inference
+        # lora_strength ≈ 1.0 lands at the trained behavior.
+        learning_rate=2e-4,  # kohya canonical for Wan
         max_target_frames=33,  # 16GB: 33f stable
     ),
     "24g": Preset(
         name="24G (RTX 3090 / 4090) — recommended default",
-        # [2026-06-10] blocks_to_swap 30 — MEASURED ladder on 4090 at
-        # 832x480x33f training: bs=10 >79 s/step, bs=20 188 s/step with
-        # 2.67 GB spilled into WDDM shared memory (Windows silently
-        # overflows VRAM to PCIe-speed system RAM instead of OOMing),
-        # bs=30 = 18.35 s/step with spill off the hot path. The lesson:
-        # on Windows, leave 3-4 GB dedicated-VRAM headroom for the
-        # desktop or the driver spills and steps run at bus speed.
+        # blocks_to_swap 30 tuned on a 4090 at 832x480x33f training to fit
+        # 24GB with desktop headroom: lower swap (bs=10/20) spills into WDDM
+        # shared memory (Windows overflows VRAM to PCIe-speed system RAM
+        # instead of OOMing) and steps run at bus speed; bs=30 = 18.35 s/step
+        # keeps the spill off the hot path. Leave 3-4 GB dedicated-VRAM
+        # headroom for the desktop or the driver spills.
         vram_gb=24, blocks_to_swap=30, network_dim=32, network_alpha=16,
-        # [2026-06-09] alpha=dim/2 (was 32) lets inference strength ≈ 1.0
-        # land at trained behavior without doubling the merge weight.
-        # lr=2e-4 (was 1e-4): kohya canonical for Wan2.2 + adamw8bit;
-        # community report #565 confirmed 1e-4 underlearned character ID.
+        # alpha=dim/2 lets inference strength ≈ 1.0 land at trained behavior
+        # without doubling the merge weight. lr=2e-4 is kohya canonical for
+        # Wan2.2 + adamw8bit (1e-4 underlearns character ID).
         learning_rate=2e-4,
-        # 24GB inference frontier at p720_81f only with bf16-norm + auto-swap
-        # stack (CURRENT_BEST_2026-06-06). Training adds grad+optimizer state;
-        # 49f is the safe default. 81f is opt-in with may-OOM warning.
+        # 24GB inference frontier reaches p720_81f only with the bf16-norm +
+        # auto-swap stack. Training adds grad+optimizer state, so 49f is the
+        # safe default; 81f is opt-in with a may-OOM warning.
         max_target_frames=49,
         # --force_v2_1_time_embedding shaves training VRAM. MUST match at
         # inference — Wan2.2-Lightning 250928 LoRA was NOT trained with
@@ -88,14 +86,14 @@ PRESETS: dict[str, Preset] = {
     "40g_plus": Preset(
         name="40G+ (A100 40GB / 80GB / H100)",
         vram_gb=40, blocks_to_swap=0, network_dim=64, network_alpha=32,
-        # alpha=dim/2 (was 64); see 24g comment
-        learning_rate=2e-4,  # was 1e-4
+        # alpha=dim/2; see 24g comment
+        learning_rate=2e-4,
         batch_size=2,
         max_target_frames=81,  # 40GB+: full 81f comfortable
-        # [2026-06-10] --offload_inactive_dit REMOVED: musubi issue #595 +
-        # docs/wan.md — needs ~42GB shared VRAM / ~96GB RAM on Windows and
-        # is "almost always slower than running two separate trainings".
-        # Dual-expert = two sequential runs with timestep windowing.
+        # --offload_inactive_dit not used (per musubi docs/wan.md): it needs
+        # ~42GB shared VRAM / ~96GB RAM on Windows and is "almost always
+        # slower than running two separate trainings". Dual-expert = two
+        # sequential runs with timestep windowing.
     ),
 }
 
@@ -126,28 +124,28 @@ def auto_select(vram_gb: int) -> Preset:
 # MOVA (joint audio-video) LoRA training presets — the A/V side of the gym.
 # Parallel to the Wan Preset above but for MOVA's OWN trainer (not musubi): the
 # video tower is kept GPU-RESIDENT as 4-bit NF4 (bitsandbytes) instead of musubi
-# block-swap, so there's no blocks_to_swap knob. Measured on a 4090 (memory
-# mova-levers-synthesis-2026-06-15): 240p/81f NF4 = ~17.7s/step, ~17GB VRAM,
-# ~6GB host RAM, trains joint A/V (M6 PASS). base="nf4" is the consumer default
-# (low host RAM); base="fp8" falls back to MOVA's CPU-offload (needs ~46GB RAM).
+# block-swap, so there's no blocks_to_swap knob. Tuned on a 4090: 240p/81f NF4 =
+# ~17.7s/step, ~17GB VRAM, ~6GB host RAM, trains joint A/V. base="nf4" is the
+# consumer default (low host RAM); base="fp8" falls back to MOVA's CPU-offload
+# (needs ~46GB RAM).
 # ============================================================================
 @dataclass
 class MovaPreset:
     name: str
     vram_gb: int
     base: str = "nf4"             # "nf4" resident (low RAM) | "fp8" offload (big RAM)
-    rank: int = 32                # LoRA rank. v3 (2026-06-19): rank 16 underfit STYLE; 32 + FFN closed it.
-    alpha: int = 16               # LoRA alpha (0 -> == rank). Style convention alpha=rank/2 (measured v3).
-    learning_rate: float = 3e-4   # measured stable w/ grad-clip 1.0 (M6)
+    rank: int = 32                # LoRA rank. rank 16 underfits STYLE; 32 + FFN closes it.
+    alpha: int = 16               # LoRA alpha (0 -> == rank). Style convention alpha=rank/2.
+    learning_rate: float = 3e-4   # stable with grad-clip 1.0
     max_target_frames: int = 81   # 81f@24fps = 3.375s; the comfortable 240p train len
     optimizer: str = "adamw8bit"
     max_train_epochs: int = 16
     save_every_n_epochs: int = 2
-    grad_clip: float = 1.0        # REQUIRED — lr diverges without it (M6)
-    lora_ffn: bool = True         # v3: LoRA the video DiT FFN linears too (attention-only underfits style).
-    # v3 measured (2026-06-19): FREEZE the audio tower once audio is solved (it overtrains while video
-    # still learns; AV-sync lives in the trainable cross-attn bridge, so audio is preserved AND the
-    # rank/FFN capacity is redirected to video style). Whisper CER held 0.056/0.10 vs unfrozen.
+    grad_clip: float = 1.0        # REQUIRED — lr diverges without it
+    lora_ffn: bool = True         # LoRA the video DiT FFN linears too (attention-only underfits style).
+    # audio tower freeze: audio overtrains first, so freeze it once audio is solved (AV-sync lives in
+    # the trainable cross-attn bridge, so audio is preserved AND the rank/FFN capacity is redirected
+    # to video style). Whisper CER held 0.056/0.10 vs unfrozen.
     train_audio_tower: bool = False
 
 
@@ -161,9 +159,9 @@ MOVA_PRESETS: dict[str, MovaPreset] = {
         vram_gb=16, base="nf4", rank=16, alpha=8, max_target_frames=49),
     "mova_24g": MovaPreset(
         name="MOVA 24G (RTX 3090/4090) — recommended (240p, NF4-resident)",
-        # MEASURED v3 recipe (2026-06-19): 240p/81f NF4, rank32/alpha16, FFN LoRA, audio frozen ->
-        # peak 16.6GB, coherent A/V (Whisper CER 0.056/0.10), claymation style transfers. Fits a
-        # normal 24GB-GPU + 32GB-RAM box (where fp8-offload's 46GB-RAM fails).
+        # 240p/81f NF4, rank32/alpha16, FFN LoRA, audio frozen -> peak 16.6GB, coherent A/V
+        # (Whisper CER 0.056/0.10), claymation style transfers. Fits a normal 24GB-GPU + 32GB-RAM
+        # box (where fp8-offload's 46GB-RAM fails).
         vram_gb=24, base="nf4", rank=32, alpha=16, max_target_frames=81),
     "mova_40g_plus": MovaPreset(
         name="MOVA 40G+ (A100/H100) — bigger rank, more frames",
@@ -328,10 +326,10 @@ def detect_host_ram_gb() -> int:
     return 0
 
 
-# [#392] Inference VRAM tiers. The 24GB row is MEASURED (champion p720_17f at
+# Inference VRAM tiers. The 24GB row is MEASURED (champion p720_17f at
 # block-swap N=2 + the 363s p720_81f run); the lower rows are CONSERVATIVE
-# extrapolations meant to be tightened by #394 (simulated-VRAM OOM walls) — they
-# gate FIT, not speed. block_swap_n is for the ~40-block/expert Wan2.2-A14B
+# extrapolations (simulated-VRAM OOM walls) — they gate FIT, not speed.
+# block_swap_n is for the ~40-block/expert Wan2.2-A14B
 # (higher N = more CPU offload = fits a smaller card, slower). vae='full' needs
 # ~22GB headroom (16.3GB measured peak at p720_17f); below that, TAEHV tiny-VAE.
 # Thresholds are GiB-FLOORS, not marketing GB: a 24GB card reports total ~=
@@ -345,14 +343,13 @@ def detect_host_ram_gb() -> int:
 # swap). N=2 is the measured champion (heavy swap; fits the huge MoE experts even
 # on 24GB) and is the safe universal floor — bigger cards COULD raise it for speed,
 # but N=2 is the most-likely-to-fit. max_px caps RESOLUTION per tier (the real
-# limiter on small cards): #394 measured 12GB OOMs at p720_17f, so 12/8GB cap to
-# p480. Measured cells (sim-VRAM FIT gate, _tier_validate): 24/N2/p720 FIT,
-# 16/N2/p720 FIT (direct re-measure 2026-06-13; also fit at N=10). 12/N2/p720 OOM
-# AND 12/N2/p480 OOM (~11.5GB GGUF-Q4 GPU floor at N2, right at the 12GB edge:
-# MARGINAL — a real card may survive via WDDM spill / expandable_segments). 8/N2/
-# p480 OOM (floor >> 8GB: GGUF-Q4 NOT viable on 8GB; needs FP8/Int8, out of scope).
-# So 12GB is best-effort@p480 and 8GB OOMs gracefully. Sim hard-cap = conservative
-# FIT gate, not a real-card guarantee. — see memory.
+# limiter on small cards): 12GB OOMs at p720_17f, so 12/8GB cap to p480. Measured
+# cells (sim-VRAM FIT gate, _tier_validate): 24/N2/p720 FIT, 16/N2/p720 FIT (also
+# fit at N=10). 12/N2/p720 OOM AND 12/N2/p480 OOM (~11.5GB GGUF-Q4 GPU floor at N2,
+# right at the 12GB edge: MARGINAL — a real card may survive via WDDM spill /
+# expandable_segments). 8/N2/p480 OOM (floor >> 8GB: GGUF-Q4 NOT viable on 8GB;
+# needs FP8/Int8, out of scope). So 12GB is best-effort@p480 and 8GB OOMs
+# gracefully. Sim hard-cap = conservative FIT gate, not a real-card guarantee.
 _INFERENCE_TIERS = (
     # min_vram(GiB floor), block_swap_n, vae,     max_frames, max_px      (card)
     (22,                   2,            "full",  81,         1280 * 720),  # 24GB
@@ -368,8 +365,8 @@ def inference_tier(vram_gb: int, ram_gb: int = 0) -> dict:
     {block_swap_n, vae, max_frames, persistent_worker, tier}.
 
     The persistent worker + eager prewarm keep the ~19GB GGUF pack resident in
-    page cache; on hosts with < 32 GB RAM that thrashes (the Wan2GP lesson + the
-    Continue-hang #380), so persistent_worker is False there. ram_gb==0 means
+    page cache; on hosts with < 32 GB RAM that thrashes, so persistent_worker is
+    False there. ram_gb==0 means
     'unknown' -> leave the worker ON (don't punish a probe failure)."""
     worker = not (0 < ram_gb < RAM_FOR_PERSISTENT_WORKER_GB)
     for min_v, n, vae, max_f, max_px in _INFERENCE_TIERS:
@@ -381,16 +378,15 @@ def inference_tier(vram_gb: int, ram_gb: int = 0) -> dict:
             "max_px": 832 * 480, "persistent_worker": False, "tier": "unknown"}
 
 
-# [S10] Wan2.2-S2V (audio-driven talking character) is ~2x heavier than T2V: it carries
+# Wan2.2-S2V (audio-driven talking character) is ~2x heavier than T2V: it carries
 # an audio_injector (25-layer wav2vec2 cross-attn into 12 DiT blocks) + 73 motion frames
 # per chunk on top of the base 40-block DiT. The T2V _INFERENCE_TIERS therefore do NOT
 # apply -- they'd tell a 16GB user "720p ok" and brick them. MEASURED on a 24GB 4090:
 # 480p widescreen (832x480) is reliable at the full per-chunk window (~13GB headroom);
 # 720p sits AT the 24GB wall regardless of window (OOMs/thrashes even with the residency
 # cap + per-chunk empty_cache + forced bf16 norms) and needs fp8/SageAttention to ship.
-# Resident GGUF-Q4 S2V floor is ~9.3GB, so <12GB cards can't hold it. Smaller cards are
-# UNMEASURED here (only a 24GB card was available) so their caps are deliberately
-# CONSERVATIVE -- the runtime residency-aware per-chunk window cap (run_one_video_gguf
+# Resident GGUF-Q4 S2V floor is ~9.3GB, so <12GB cards can't hold it. Smaller cards have
+# deliberately CONSERVATIVE caps -- the runtime residency-aware per-chunk window cap (run_one_video_gguf
 # _do_one_generation_s2v) self-limits further from ACTUAL free VRAM, so these are an
 # upper bound the UI enforces, not a fit guarantee.
 _S2V_TIERS = (

@@ -1,5 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN K3N0B1: GGUF
+# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN KENOBI: GGUF
 # quantized path, block-swap offload, persistent worker, I2V graft, tiled
 # VAE, profiling. See THIRD_PARTY_LICENSES.md.
 import gc
@@ -100,7 +100,7 @@ class WanT2V:
 
         self.vae_stride = config.vae_stride
         self.patch_size = config.patch_size
-        # [2026-06-05] BASIWAN_VAE_BF16=1 runs the VAE decode under bf16
+        # BASIWAN_VAE_BF16=1 runs the VAE decode under bf16
         # autocast (default is fp32 because Wan2_1_VAE.dtype defaults to
         # torch.float). At p720_17f the full VAE decode is ~40s of the ~82s
         # ship-recipe wall; bf16 should ~halve it. Probe single-prompt then
@@ -112,7 +112,7 @@ class WanT2V:
             dtype=_vae_dtype,
             device=self.device)
         print(f"[startup-phase] vae_load {_itime.time() - _t_vae:.1f}s", flush=True)
-        # [Faster-Wan2.2 P33 — 2026-05-31] VAE+TAEHV CPU during diffusion.
+        # VAE+TAEHV CPU during diffusion.
         # The Wan VAE (~3 GB) and TAEHV decoder (~0.5 GB) only run at the END of
         # generate() for latent→pixel decode, but historically lived on GPU
         # throughout diffusion, eating headroom needed for FFN intermediates at
@@ -127,7 +127,7 @@ class WanT2V:
                 logging.info("[P33] VAE moved to CPU until decode time")
             except Exception as _e:
                 logging.warning(f"[P33] VAE→CPU failed: {_e}")
-        # [Faster-Wan2.2 P20 — amended 2026-05-31] VAE decoder torch.compile.
+        # VAE decoder torch.compile.
         # VAE decode hot path is upsample[0]+upsample[1] — 156 Conv3d calls at dim=1024
         # frame-serially. We use "reduce-overhead" mode (not "max-autotune-no-cudagraphs")
         # because the latter triggers a triton autotune storm: every triton_convolution3d
@@ -148,7 +148,7 @@ class WanT2V:
             except Exception as e:
                 logging.warning(f"[P20] VAE decoder compile failed (continuing uncompiled): {e}")
 
-        # [Faster-Wan2.2 P26] Optional TAEHV (madebyollin/taehv) tiny-VAE decoder.
+        # Optional TAEHV (madebyollin/taehv) tiny-VAE decoder.
         # 4-6× faster decode + 12-18× less memory at slight quality cost — ideal for
         # preview / iterative monitoring. Latent layout matches Wan VAE exactly:
         # 16ch, 4× temporal, 8× spatial. Enable via BASIWAN_TAEHV_VAE=1.
@@ -158,7 +158,7 @@ class WanT2V:
         if os.environ.get("BASIWAN_TAEHV_VAE") == "1":
             try:
                 from pathlib import Path as _P
-                # [2026-06-11 #381] Portable default: repo-relative
+                # Portable default: repo-relative
                 # checkpoints/taehv (this file is wan/text2video.py → repo
                 # root is two parents up). Auto-downloads below if absent —
                 # works on any machine, not just the dev box. Override with
@@ -175,7 +175,7 @@ class WanT2V:
                     urllib.request.urlretrieve(_url, _taehv_ckpt)
                 from taehv import TAEHV
                 self._taehv_decoder = TAEHV(checkpoint_path=str(_taehv_ckpt))
-                # [P33] Init on CPU; .to(device) at decode time.
+                # Init on CPU; .to(device) at decode time.
                 _decoder_cpu_init = os.environ.get("BASIWAN_NO_DECODER_CPU") != "1"
                 _init_device = "cpu" if _decoder_cpu_init else self.device
                 self._taehv_decoder = self._taehv_decoder.to(_init_device).eval()
@@ -210,7 +210,7 @@ class WanT2V:
             shard_fn=shard_fn,
             convert_model_dtype=convert_model_dtype)
 
-        # [Faster-Wan2.2 P19] Wan2.2-Lightning LoRA opt-in. Set BASIWAN_LORA_DIR
+        # Wan2.2-Lightning LoRA opt-in. Set BASIWAN_LORA_DIR
         # to a directory containing high_noise_model.safetensors + low_noise_model.safetensors
         # LoRAs (e.g. <checkpoints>/Wan2.2-Lightning/Wan2.2-T2V-A14B-4steps-250928).
         # When set, both experts get merged with the 4-step distilled LoRA. Caller MUST
@@ -231,7 +231,7 @@ class WanT2V:
                 stats = self.low_noise_model.apply_lora_safetensors(str(_lo), strength=_strength)
                 logging.info(f"[P19] low_noise_model LoRA merged: {stats}")
 
-        # [Faster-Wan2.2 P24] User LoRA stacked on top of Lightning (BASI preview path).
+        # User LoRA stacked on top of Lightning (BASI preview path).
         # Two protocols supported:
         #   - BASIWAN_USER_LORA_LIST = comma-separated paths (multi-LoRA stacking, T4.C)
         #   - BASIWAN_USER_LORA = single .safetensors path (legacy, single-LoRA)
@@ -292,7 +292,7 @@ class WanT2V:
         """
         model.eval().requires_grad_(False)
 
-        # [Faster-Wan2.2 P5] opt-in torch.compile with Morphic-validated settings:
+        # opt-in torch.compile with Morphic-validated settings:
         # mode=max-autotune-no-cudagraphs (see H3 rejection below)
         # fullgraph=False (RoPE dynamic slicing causes graph breaks)
         # dynamic=True (tolerates resolution-induced seq_len changes)
@@ -431,7 +431,7 @@ class WanT2V:
                                required_model_name,
                                offload_model_name=None,
                                offload_previous=False):
-        # [Faster-Wan2.2 P23 amended 2026-05-29] At Wan2.2-A14B-FP8 scale each
+        # At Wan2.2-A14B-FP8 scale each
         # expert is ~13 GB. P23's "load required first, then async-evict" loses
         # at the boundary crossing on a 24 GB GPU — 13 GB resident + 13 GB
         # incoming = 26 GB → OOM. The 175 ms PCIe savings P23 was after only
@@ -477,7 +477,7 @@ class WanT2V:
         required_model_name, offload_model_name = self._model_names_for_timestep(
             t, boundary)
         if offload_model or self.init_on_cpu:
-            # [Faster-Wan2.2 P23] Load BEFORE evict, then async-evict.
+            # Load BEFORE evict, then async-evict.
             # Original order: evict (blocking) → load (blocking). New order: load (blocking,
             # safe — required for forward to start) → evict (non_blocking — PCIe transfer
             # runs concurrent with subsequent forward). Saves ~175ms per boundary crossing
@@ -569,7 +569,7 @@ class WanT2V:
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
 
-        # [Faster-Wan2.2 P21] T5 prompt embedding cache + batched cond/uncond encode.
+        # T5 prompt embedding cache + batched cond/uncond encode.
         # (a) Cache: sha256(prompt+|||+n_prompt+|||+text_len) → torch-saved BF16 embeddings.
         #     Disk cache at $BASIWAN_T5_CACHE (default ~/.cache/faster-wan2.2/t5).
         # (b) Batched encode: single text_encoder([prompt, n_prompt], device) call replaces
@@ -579,7 +579,7 @@ class WanT2V:
         from pathlib import Path
         _t5_cache_dir = Path(os.environ.get("BASIWAN_T5_CACHE",
                                             os.path.expanduser("~/.cache/faster-wan2.2/t5")))
-        # [BASIWAN-PHASE-PROFILE 2026-06-09] Phase wall markers — gated on
+        # Phase wall markers — gated on
         # BASIWAN_PHASE_PROFILE=1. Localizes the cold-cache regression seen
         # in multi-prompt subprocess benches (memory/cold_cache_penalty_*).
         # JSON event mirror (always-on when phase profile is on) lets the
@@ -654,7 +654,7 @@ class WanT2V:
                 generator=seed_g)
         ]
 
-        # [2026-06-09 #370] Optional I2V conditioning, grafted from
+        # Optional I2V conditioning, grafted from
         # wan/image2video.py:259-323 so the optimized pipeline (block-swap,
         # chunked FFN, V2 kernel, T5 cache, phase events) is reused instead
         # of the unoptimized WanI2V class. Requires I2V expert weights
@@ -678,7 +678,7 @@ class WanT2V:
             ], dim=1)
             msk = msk.view(1, msk.shape[1] // 4, 4, _lat_h, _lat_w)
             msk = msk.transpose(1, 2)[0]
-            # [P33-aware] The VAE is parked on CPU until decode; pull it to
+            # The VAE is parked on CPU until decode; pull it to
             # GPU for this one encode, then park it again (same pattern as
             # the decode block below).
             _decoder_cpu = os.environ.get("BASIWAN_NO_DECODER_CPU") != "1"
@@ -697,7 +697,7 @@ class WanT2V:
                 torch.cuda.empty_cache()
             y_cond = torch.concat([msk, y_lat])
 
-        # [2026-06-11 #385] SDEdit V2V restyle: encode the source video into
+        # SDEdit V2V restyle: encode the source video into
         # the denoiser's latent space. At denoise_strength<1 the scheduler
         # (below) starts mid-trajectory from this latent + partial noise, so
         # structure/motion carry from the source while the LoRA restyles. The
@@ -718,7 +718,7 @@ class WanT2V:
             if _phase_prof:
                 _emit_phase("vae_encode_video", _time.time() - _ph_t1)
 
-        # [#387] Sliding-window overlap injection: encode the previous window's
+        # Sliding-window overlap injection: encode the previous window's
         # STYLED tail (overlap_pixels, (3, n_overlap, H, W) in [-1,1]) into the
         # leading latent frames we re-anchor to each denoise step, so the kept
         # frames stay continuous in style/motion with the prior window across the
@@ -736,7 +736,7 @@ class WanT2V:
             if _phase_prof:
                 _emit_phase("vae_encode_overlap", _time.time() - _ph_t1)
 
-        # [#388] VACE depth-control: build the 96-ch control latent ONCE (it is
+        # VACE depth-control: build the 96-ch control latent ONCE (it is
         # constant across all denoising steps — verified ali-vilab semantics).
         # vace_video is the depth control pixel video (3,F,H,W) in [-1,1]. We use
         # an explicit ALL-ONES mask => inactive = VAE(zeros), reactive = VAE(depth),
@@ -747,11 +747,11 @@ class WanT2V:
         # is wrong because the VAE mean-shift offsets zeros. vace_video=None leaves
         # the path byte-identical (vace_context stays None below).
         vace_context = None
-        _anchor_latents = None    # [#389] keyframe hard-lock injection targets
+        _anchor_latents = None    # keyframe hard-lock injection targets
         _anchor_lat_idx = None
         if vace_video is not None:
             from basi import vace as _vmod
-            # [#388] LOUD guard: VACE depth-lock collapses below the validated
+            # LOUD guard: VACE depth-lock collapses below the validated
             # regime (50 steps / guide 5.0). Warn so a weak run can't silently
             # look "broken" (the exact trap that cost a debug cycle).
             _vwarn = _vmod.check_vace_regime(sampling_steps, guide_scale)
@@ -765,7 +765,7 @@ class WanT2V:
             if _dec_cpu_vc:
                 self.vae.model.to(self.device)
             _vv = vace_video.to(self.device)
-            # [#389] vace_mask given => keyframe-anchored editing (0=keep anchor,
+            # vace_mask given => keyframe-anchored editing (0=keep anchor,
             # 1=generate); None => depth-control / full-regen (all-ones mask).
             _mask = (vace_mask.to(self.device) if vace_mask is not None
                      else _vmod.ones_mask(_vv))
@@ -776,7 +776,7 @@ class WanT2V:
                 self.vae.model.cpu()
                 torch.cuda.empty_cache()
             _Flat, _Hlat, _Wlat = _inact.shape[1], _inact.shape[2], _inact.shape[3]
-            # [#389] sparse keyframe masks need the causal VAE-group min-pool or
+            # sparse keyframe masks need the causal VAE-group min-pool or
             # single-frame anchors get dropped by nearest-exact; depth (None mask)
             # keeps the byte-identical reference nearest-exact path.
             _treduce = "vae_min" if vace_mask is not None else "nearest"
@@ -784,7 +784,7 @@ class WanT2V:
                                              temporal_reduce=_treduce)
             _z = _vmod.assemble_vace_latent(_inact, _react, _m64).to(_inact.dtype)
             vace_context = [_z]                            # list[ [96,Fl,Hl,Wl] ]
-            # [#389] Keyframe HARD-LOCK: the Fun checkpoint's VACE conditioning
+            # Keyframe HARD-LOCK: the Fun checkpoint's VACE conditioning
             # only SOFTLY preserves sparse RGB anchors (research-confirmed). So
             # ALSO RePaint-inject the anchor latent frames each denoise step — the
             # anchor latents come from the inactive channel (= VAE of the anchor
@@ -840,7 +840,7 @@ class WanT2V:
             else:
                 raise NotImplementedError("Unsupported solver.")
 
-            # [2026-06-11 #385] SDEdit V2V: enter the schedule mid-trajectory.
+            # SDEdit V2V: enter the schedule mid-trajectory.
             # kijai-parity start step; our solvers ship set_begin_index +
             # begin-index-aware add_noise (x_t = (1-sigma)*x0 + sigma*noise,
             # exact float sigma), so no array slicing of sigmas — just set the
@@ -869,31 +869,31 @@ class WanT2V:
                 arg_c['y'] = [y_cond]
                 arg_null['y'] = [y_cond]
 
-            # [Faster-Wan2.2 P10] Opt-in CUDA-event wall breakdown.
+            # Opt-in CUDA-event wall breakdown.
             # BASIWAN_PROFILE=1 prints per-phase ms at end of generation.
             # Costs ~2 µs/event — negligible at our shape but disabled by default.
             _profile = os.environ.get("BASIWAN_PROFILE") == "1"
             _ev = (lambda: torch.cuda.Event(enable_timing=True)) if _profile else None
             _phase_ms = {'swap': 0.0, 'fwd_cond': 0.0, 'fwd_uncond': 0.0,
                          'sched': 0.0} if _profile else None
-            # [Faster-Wan2.2 P25] Fixed-shape CUDA Graphs at Lightning shape.
+            # Fixed-shape CUDA Graphs at Lightning shape.
             # Captures the per-step WanModel.forward once per expert after warmup, replays
             # for remaining steps. Amortizes kernel launch overhead (~5700 launches/fwd → 1).
             # Auto-disables on: distributed/SP, CFG-mixed steps, TeaCache active. The CFG-skip
             # gate (P22) is required because graph capture binds context tensors at capture time.
-            # [#388] VACE injects per-step vace_context via arg_c/arg_null; the
+            # VACE injects per-step vace_context via arg_c/arg_null; the
             # captured graph replay path can't carry it, so VACE forwards must
             # run eager. Disable CUDA graphs when a control latent is present.
             _cuda_graph_requested = (os.environ.get("BASIWAN_CUDA_GRAPHS") == "1"
                                      and vace_context is None)
             _cuda_graph_skip_reason = None
-            # [P29 update 2026-05-28] We previously force-skipped CUDA Graphs whenever
-            # Float8 weights were detected. Bisect proved torchao FP8 is graph-safe;
-            # the actual blocker was flash_attn 2.8.3's internal workspace going stale
-            # at N≥5 captured calls. attention.py:flash_attention auto-routes to SDPA
-            # when torch.cuda.is_current_stream_capturing() returns True — so the FP8
-            # auto-skip is no longer needed. Keep the rest of the guard logic
-            # (distributed/SP, TeaCache, CFG-mixed) below.
+            # CUDA Graphs are safe with torchao FP8 weights: during capture,
+            # attention.py:flash_attention auto-routes to SDPA (it checks
+            # torch.cuda.is_current_stream_capturing()), sidestepping flash_attn
+            # 2.8.3's internal workspace — which goes stale at N≥5 captured
+            # calls and is the real capture hazard. So no FP8-specific skip is
+            # needed; keep the rest of the guard logic (distributed/SP,
+            # TeaCache, CFG-mixed) below.
             _all_cfg_skip = (os.environ.get("BASIWAN_NO_CFG_SKIP") != "1")
             if _all_cfg_skip:
                 _all_cfg_skip = all(
@@ -916,7 +916,7 @@ class WanT2V:
             _graph_model_name = None
 
             for _step_i, t in enumerate(tqdm(timesteps)):
-                # [2026-06-10] Per-step worker event so the UI can show live
+                # Per-step worker event so the UI can show live
                 # step progress + per-step wall. Without this the worker-mode
                 # progress bar froze for the whole step loop — at 20 steps ×
                 # guide>1 (CFG doubles forwards) that's many opaque minutes.
@@ -924,7 +924,7 @@ class WanT2V:
                             i=_step_i, n=len(timesteps)) if _phase_prof else None
                 latent_model_input = latents
                 timestep = [t]
-                # [#388] VACE: pass the (constant) control latent to BOTH the
+                # VACE: pass the (constant) control latent to BOTH the
                 # cond and uncond forwards via arg_c/arg_null — the official
                 # code passes vace_context on both; dropping it on uncond
                 # corrupts the CFG subtraction. The vace_end_percent gate
@@ -994,7 +994,7 @@ class WanT2V:
                         latent_model_input, t=timestep, **arg_c)[0]
                 if _profile: e1.record()
 
-                # [Faster-Wan2.2 P22] CFG-skip when guide_scale==1.0 (Lightning mode).
+                # CFG-skip when guide_scale==1.0 (Lightning mode).
                 # At guide==1: noise_pred = noise_pred_uncond + 1*(noise_pred_cond - noise_pred_uncond)
                 # = noise_pred_cond. The uncond forward is wasted — skipping halves per-step
                 # compute. Set BASIWAN_NO_CFG_SKIP=1 to force-run uncond (e.g. for debugging).
@@ -1019,7 +1019,7 @@ class WanT2V:
                     return_dict=False,
                     generator=seed_g)[0]
                 latents = [temp_x0.squeeze(0)]
-                # [#387] Sliding-window overlap injection (RePaint-style). After
+                # Sliding-window overlap injection (RePaint-style). After
                 # the step produces latents at the NEXT noise level, overwrite the
                 # leading n_ov latent frames with the KNOWN previous-window tail
                 # forward-diffused to that same level. The model's temporal
@@ -1036,7 +1036,7 @@ class WanT2V:
                         _t_next.unsqueeze(0).to(overlap_latents.device),
                     ).squeeze(0)
                     latents[0][:, :_n_ov] = _known.to(latents[0].dtype)
-                # [#389] Keyframe hard-lock: RePaint-inject the anchor latent
+                # Keyframe hard-lock: RePaint-inject the anchor latent
                 # frames toward their known (inactive-channel) latents each step,
                 # so the edited keyframes are enforced even though the Fun
                 # checkpoint only softly conditions on them.
@@ -1076,7 +1076,7 @@ class WanT2V:
 
             x0 = latents
             if offload_model:
-                # 2026-06-08 Windows port: residency probe + (optional) meta-tensor
+                # Windows port: residency probe + (optional) meta-tensor
                 # offload. Default path (.to('cpu')) leaves the CUDA allocator
                 # fragmented on Windows where expandable_segments is non-functional,
                 # causing VAE conv-workspace OOM. BASIWAN_META_OFFLOAD=1 replaces
@@ -1107,12 +1107,12 @@ class WanT2V:
                 _ph_t3 = _time.time()
 
             if self.rank == 0:
-                # [P33] Pull the decoder back to GPU for the actual decode step.
+                # Pull the decoder back to GPU for the actual decode step.
                 _decoder_cpu = os.environ.get("BASIWAN_NO_DECODER_CPU") != "1"
                 if self._taehv_decoder is not None:
                     if _decoder_cpu:
                         self._taehv_decoder.to(self.device)
-                    # [P26] TAEHV decode. x0 is list[Tensor(C, T, H, W)]; TAEHV expects
+                    # TAEHV decode. x0 is list[Tensor(C, T, H, W)]; TAEHV expects
                     # (B, T, C, H, W). Output: (B, T, 3, H_full, W_full) in [0, 1].
                     # Wan's downstream expects list[Tensor(3, T_out, H_full, W_full)] in [-1, 1].
                     videos = []

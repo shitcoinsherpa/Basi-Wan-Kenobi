@@ -1,4 +1,4 @@
-"""BASI WAN K3N0B1 — Flux-Gym-style UI for Wan2.2 video LoRA training.
+"""BASI WAN KENOBI — Flux-Gym-style UI for Wan2.2 video LoRA training.
 
 Three-column layout (Configure → Dataset → Train):
   - Configure: LoRA name, trigger word, expert (low/high/both), preset, steps, sample prompt
@@ -24,25 +24,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from basi.presets import (
     PRESETS, detect_vram_gb, auto_select,
     detect_capability, recommend_inference_scheme,
-    inference_tier, detect_host_ram_gb,  # [#392] adaptive inference VRAM tiers
-    s2v_caps,  # [S10] S2V is heavier than T2V -> its own measured capability gate
-    MOVA_PRESETS, auto_select_mova,  # [C3] MOVA A/V Gym mode preset swap
+    inference_tier, detect_host_ram_gb,  # adaptive inference VRAM tiers
+    s2v_caps,  # S2V is heavier than T2V -> its own measured capability gate
+    MOVA_PRESETS, auto_select_mova,  # MOVA A/V Gym mode preset swap
 )
 from basi.dataset import scan_dataset, bucket_distribution
 from basi.train import TrainConfig, prepare_training_run, OUTPUTS_ROOT
 from basi.defaults import RESTYLE_SDEDIT_RECIPE, STUDIO, GYM  # single source of truth for UI defaults
-from basi.mova_train import (format_mova_estimate_md,  # [MOVA] pre-flight time/VRAM estimate
-                             parse_mova_training_log, format_mova_analytics_md)  # [MOVA] live analytics
+from basi.mova_train import (format_mova_estimate_md,  # pre-flight time/VRAM estimate
+                             parse_mova_training_log, format_mova_analytics_md)  # live analytics
 from basi.preview import PreviewSpec, generate_preview, latest_lora_in
 from basi.caption import caption_dataset, select_model_for_vram
-from basi import eta as _eta  # [#393] pre-flight estimate + live countdown + EMA cache
+from basi import eta as _eta  # pre-flight estimate + live countdown + EMA cache
 
 BASI_ROOT = Path(__file__).resolve().parent
 WORKSPACES = BASI_ROOT / "outputs"
 
 
 def _list_studio_loras():
-    """[#391] Discover trained LoRAs in Gym workspaces for the Studio dropdown.
+    """Discover trained LoRAs in Gym workspaces for the Studio dropdown.
     Returns [(label, payload)] where payload is None for "(none)" or a dict
     {high, low, single} of resolved file paths. Auto-pairs <base>_high /
     <base>_low dual-expert workspaces into one entry. Uses ONLY the final
@@ -140,10 +140,8 @@ DEFAULT_VAE = f"{DEFAULT_CKPT_DIR}/Wan2.1_VAE.pth"
 
 # Common ComfyUI lora dirs we'll probe for the "auto-link" feature.
 COMFYUI_LORA_CANDIDATES = [
-    # [2026-06-11 #381] Portable: env override, then home + Pinokio peer-app
-    # layout (../comfy.git is the cocktailpeanut convention). Set
-    # BASIWAN_COMFY_LORA_DIR to add a custom ComfyUI loras dir (no dev-box
-    # absolute paths shipped — they only ever no-op on other machines).
+    # Override order: BASIWAN_COMFY_LORA_DIR, then user home, then the Pinokio
+    # peer-app layout (../comfy.git is the cocktailpeanut convention).
     *([Path(os.environ["BASIWAN_COMFY_LORA_DIR"])]
       if os.environ.get("BASIWAN_COMFY_LORA_DIR") else []),
     Path.home() / "ComfyUI/models/loras",
@@ -152,9 +150,9 @@ COMFYUI_LORA_CANDIDATES = [
 ]
 
 
-# --- Inference checkpoint resolution (module-level + pure so it is unit-tested
-# in tools/_smoke_ckpt_resolve.py). Everything resolves under BASIWAN_CKPT_DIR
-# (default <repo>/checkpoints), so one env var repoints the whole model set. ---
+# --- Inference checkpoint resolution (module-level + pure for testability).
+# Everything resolves under BASIWAN_CKPT_DIR (default <repo>/checkpoints), so
+# one env var repoints the whole model set. ---
 def _basiwan_resolve_ckpt(env_val, bases, rel):
     """Resolve a non-GGUF checkpoint dir/file. env override (if it exists) ->
     <base>/rel for each base in priority order -> the FIRST base's path as the
@@ -196,9 +194,9 @@ _INFER_TIER_CACHE: dict = {}
 
 
 def _get_infer_tier() -> dict:
-    """[#392] The inference recipe for THIS machine (VRAM + host RAM), computed
+    """The inference recipe for THIS machine (VRAM + host RAM), computed
     once and cached. Falls back to the measured 24GB champion tier if probing
-    fails (never worse than the old hardcoded N=2)."""
+    fails."""
     if "t" not in _INFER_TIER_CACHE:
         try:
             _INFER_TIER_CACHE["t"] = inference_tier(
@@ -212,7 +210,7 @@ _S2V_CAPS_CACHE: dict = {}
 
 
 def _get_s2v_caps() -> dict:
-    """[S10] This machine's S2V capability (availability + max resolution/window),
+    """This machine's S2V capability (availability + max resolution/window),
     cached. Falls back to 'available at 480p' if probing fails (a 24GB-class default;
     the runtime residency cap still self-limits, so a probe failure won't brick)."""
     if "c" not in _S2V_CAPS_CACHE:
@@ -248,10 +246,9 @@ def _ingest_uploaded_videos(files: list, workspace_name: str) -> tuple[str, str]
     for c in clips:
         cap = "✓ caption" if c.caption_text else "✗ NO CAPTION"
         issues = f" — {', '.join(c.issues)}" if c.issues else ""
-        # [2026-06-10] Long-source guard: a >60s "clip" is almost
-        # certainly raw footage that belongs in Auto-split, not the
-        # dataset — training samples 2s windows from it and the frame
-        # snap throws the rest away.
+        # Long-source guard: a >60s "clip" is almost certainly raw footage
+        # that belongs in Auto-split, not the dataset — training samples 2s
+        # windows from it and the frame snap throws the rest away.
         if c.duration_s > 60:
             issues += (" — ⚠️ **this is a long source video, not a "
                        "training clip. Use 'Auto-split long video into "
@@ -270,18 +267,14 @@ def _auto_caption(dataset_dir: str, trigger_word: str, mova_av_mode: bool = Fals
 
     mova_av_mode=True (set when the Gym training type is MOVA): caption with the joint A/V prompt
     (one diegetic sound-event clause, no art-style words) AND then append VERBATIM spoken dialogue
-    via CPU-Whisper -- the #1 fix for intelligible MOVA speech (measured CER 0.0-0.06 with dialogue
+    via CPU-Whisper -- required for intelligible MOVA speech (measured CER 0.0-0.06 with dialogue
     vs non-English babble without). Without this routing the MOVA dataset gets the video-only prompt
-    and no dialogue -> garbled audio (the bug this fixes).
+    and no dialogue -> garbled audio.
 
-    [2026-06-10 v3] This is a generator: every yield replaces the visible
-    report markdown, so the user has feedback from the first second of
-    the click. The previous versions used gr.Progress — which renders as
-    an overlay ON the output component, and this handler's output is an
-    initially-EMPTY Markdown with zero height: the progress was being
-    drawn into an invisible box. Lesson generalized in #381: long
-    operations stream text into a visible component; overlays are
-    decoration, never the only feedback channel.
+    A generator: every yield replaces the visible report markdown, so the user
+    has feedback from the first second of the click. Long operations stream text
+    into a visible component rather than into a gr.Progress overlay (which renders
+    on an initially-empty zero-height Markdown and would be invisible).
     """
     import threading as _th
     import time as _tm
@@ -403,9 +396,9 @@ def _auto_caption(dataset_dir: str, trigger_word: str, mova_av_mode: bool = Fals
         yield "\n".join(lines)
         return
 
-    # ── MOVA stage 4: append VERBATIM spoken dialogue (the #1 audio-intelligibility fix).
+    # ── MOVA stage 4: append VERBATIM spoken dialogue (required for audio intelligibility).
     # MOVA conditions speech on the literal words; without them generated audio is non-English
-    # babble (measured CER 0.0-0.06 WITH dialogue). CPU-Whisper, idempotent (.txt.orig backup).
+    # babble (measured CER 0.0-0.06 with dialogue). CPU-Whisper, idempotent (.txt.orig backup).
     lines.append("\n🎙️ adding spoken dialogue to captions (ASR · CPU Whisper) — required for "
                  "intelligible MOVA speech…")
     yield "\n".join(lines)
@@ -509,10 +502,9 @@ def _generate_scripts(workspace_name: str, dataset_dir: str, preset_key: str,
 
 _active_procs: dict[str, subprocess.Popen] = {}
 
-# [2026-06-09] Cross-platform process-group management for Gym scripts.
-# Pre-existing setsid + killpg pattern was Unix-only and crashed on Windows
-# with `ValueError: preexec_fn not supported`. New strategy:
-#   - Unix: keep setsid + killpg (most reliable on Linux/macOS)
+# Cross-platform process-group management for Gym scripts, for reliable
+# kill of the whole training tree:
+#   - Unix: setsid + killpg (preexec_fn is unavailable on Windows)
 #   - Windows: CREATE_NEW_PROCESS_GROUP creationflags + psutil tree walk to
 #     kill the script process AND any musubi/accelerate child workers.
 _IS_WIN = sys.platform == "win32"
@@ -846,14 +838,14 @@ def _basi_header_html():
         _ic = _ic.resize((max(1, round(_ic.width * _h / _ic.height)), _h), _PILImage.LANCZOS)
         _buf = _io.BytesIO(); _ic.save(_buf, format="PNG")
         _b = base64.b64encode(_buf.getvalue()).decode()
-        _img = (f'<img class="basi-logo" alt="BASIWAN" '
+        _img = (f'<img class="basi-logo" alt="BASI WAN KENOBI" '
                 f'style="height:54px;width:auto;" '
                 f'src="data:image/png;base64,{_b}"/>')
     except Exception:
         _img = ""
     return (
         '<div class="basi-header">' + _img +
-        '<div><div class="basi-title">BASIWAN</div>'
+        '<div><div class="basi-title">BASI WAN KENOBI</div>'
         '<div class="basi-sub">WAN2.2 VIDEO STUDIO · LoRA GYM · JOINT A/V (MOVA) '
         '— LIBERATED FOR THE GPU-POOR 🐉</div></div></div>'
         '<div class="basi-divider">.-.-.-.-&lt;=|  B4S1W4N : L1B3R4T3D  |=&gt;-.-.-.-.</div>'
@@ -873,7 +865,7 @@ def build_ui():
         "bf16":    "BF16 (no prequant — debug path)",
     }.get(rec_scheme, rec_scheme)
 
-    with gr.Blocks(title="BASIWAN", css=_BASI_LIBERATED_CSS,
+    with gr.Blocks(title="BASI WAN KENOBI", css=_BASI_LIBERATED_CSS,
                    js="()=>{document.body.classList.add('basi-liberated');}") as demo:
         gr.HTML(_basi_header_html())
         _lame = gr.Checkbox(value=True, container=False,
@@ -954,10 +946,10 @@ def build_ui():
                     inputs=[studio_prompt],
                     label="Wan 2.2 example prompts (click to use)",
                 )
-                # [C4] Explicit mode selector -- every mode is a peer (S2V included,
-                # no greyed-out outlier). Picking a mode reveals only that mode's extra
-                # inputs below; Text->Video uses just the prompt + shape. The generate
-                # handlers stay input-presence based, so this is a pure clarity layer.
+                # Explicit mode selector -- every mode is a peer. Picking a mode reveals
+                # only that mode's extra inputs below; Text->Video uses just the prompt +
+                # shape. The generate handlers stay input-presence based, so this is a
+                # pure clarity layer.
                 studio_mode = gr.Radio(
                     ["Text → Video", "Restyle", "Continue", "Keyframe", "Talking character",
                      "Joint A/V (MOVA)"],
@@ -965,7 +957,7 @@ def build_ui():
                     info="What to make. The extra inputs for Restyle / Continue / "
                          "Keyframe / Talking-character / Joint A/V appear below when selected.")
                 with gr.Accordion("Advanced", open=False) as adv_acc:
-                    # [S10] System-aware choices: filter resolution + frames to what the
+                    # System-aware choices: filter resolution + frames to what the
                     # detected card's inference tier can run, so a smaller card never
                     # SEES (let alone picks) a 720p/long config that OOMs. 12/8GB tiers
                     # cap to 480p; 16GB->49 frames, 12GB->33, 8GB->17 (basi.presets
@@ -1049,7 +1041,7 @@ def build_ui():
                 studio_video = gr.Video(label="Output", interactive=False)
                 studio_status = gr.Markdown()
 
-                # [#385] Restyle: re-render an uploaded clip in the selected
+                # Restyle: re-render an uploaded clip in the selected
                 # Character LoRA's style, preserving its motion/structure
                 # (SDEdit partial-noise V2V). Reuses the same worker + combo
                 # path as Generate; the prompt + LoRA define the new look.
@@ -1063,12 +1055,12 @@ def build_ui():
                         info=("Lower = keep more of the source (subtle); "
                               "higher = stronger restyle. <0.5 only touches "
                               "the low-noise expert. (Fast/SDEdit mode only.)"))
-                    # [#388] Restyle method. Fast = 8-step SDEdit (keeps source
+                    # Restyle method. Fast = 8-step SDEdit (keeps source
                     # via partial noise; uses the denoise slider + your LoRA).
-                    # Depth-lock = VACE-Fun depth control (validated structure-
-                    # lock 0.973): full-denoise QUALITY recipe (50 steps/guide
-                    # 5.0, ignores the denoise slider), swaps to the VACE model
-                    # on first use (~one-time cache build). ~440s/clip p480_17f.
+                    # Depth-lock = VACE-Fun depth control (structure-lock corr
+                    # 0.973): full-denoise QUALITY recipe (50 steps/guide 5.0,
+                    # ignores the denoise slider), swaps to the VACE model on
+                    # first use (~one-time cache build). ~440s/clip p480_17f.
                     restyle_mode = gr.Radio(
                         ["Fast (SDEdit)", "Depth-lock (VACE)"],
                         value="Fast (SDEdit)", label="Restyle method",
@@ -1077,7 +1069,7 @@ def build_ui():
                              "source's structure/geometry via depth control -- slower, higher "
                              "fidelity, ignores the denoise slider.")
                     restyle_btn = gr.Button("Restyle", variant="primary")
-                # [#389] Keyframe-anchored editing (Ray Modify parity). Upload your
+                # Keyframe-anchored editing (Ray Modify parity). Upload your
                 # EDITED frames + their positions; the model keeps them and generates
                 # a video anchored to them. Routes to the GGUF-validated VACE
                 # vace_edit worker path (anchors hard-locked, near-perfect preserve).
@@ -1101,7 +1093,7 @@ def build_ui():
                 # which shares _studio_generate (continue_image is positional).
                 _restyle_no_continue = gr.State(value=None)
 
-                # [#371] Continue-from-last-frame (FinalFrame pattern, done
+                # Continue-from-last-frame (FinalFrame pattern, done
                 # natively): pick a tail frame of the previous output, write
                 # a motion-first continuation prompt (or let Qwen3-VL draft
                 # one), generate with the I2V expert pair, stitch.
@@ -1132,7 +1124,7 @@ def build_ui():
                         continue_btn = gr.Button("Continue", variant="primary")
                     continue_status = gr.Markdown()
 
-                # [S10] System-aware S2V accordion: gate on the card's measured S2V
+                # System-aware S2V accordion: gate on the card's measured S2V
                 # capability so a too-small GPU can't launch a brick. The button is
                 # disabled (with the reason) when S2V isn't viable; the tier note is
                 # always shown so the user knows the resolution ceiling up front.
@@ -1158,7 +1150,7 @@ def build_ui():
                         interactive=_s2v_caps0["available"])
                     s2v_status = gr.Markdown()
 
-                # [MI3] Joint A/V (MOVA): TEXT -> audio+video. Runs the trained MOVA LoRA
+                # Joint A/V (MOVA): TEXT -> audio+video. Runs the trained MOVA LoRA
                 # (or base) in the dedicated env_mova venv via tools/mova_sample.py. T2AV —
                 # the prompt drives everything; no image upload (the sampler synthesizes the
                 # neutral first frame). Defaults are OUR measured recipe (MovaPreset mova_24g:
@@ -1169,10 +1161,13 @@ def build_ui():
                 _mova_ready = _mova_caps0["available"] and _mova_infer.mova_installed()
                 with gr.Accordion("Joint A/V (MOVA)", open=True, visible=False) as mova_acc:
                     gr.Markdown(
-                        "Generate **audio + video together** from a text prompt (MOVA joint "
-                        "A/V). Pick a MOVA LoRA you trained in the Gym (or the base). 240p, "
-                        "~3.4s clips; first click loads the model (group offload). This is "
-                        "text-driven — no image needed.\n\n"
+                        "Generate **audio + video together** from a text prompt + a **reference "
+                        "image** (MOVA is image-to-video). Pick a MOVA LoRA you trained in the Gym "
+                        "(or the base). The reference frame is the **opening shot** — it sets both "
+                        "the **style** and the **scene/background**, and the prompt drives the "
+                        "motion + speech. So for a given setting, use a reference in that setting "
+                        "(your LoRA ships an in-style one, or upload your own). 240p, ~3.4s clips; "
+                        "first click loads the model (group offload).\n\n"
                         + (f"**Your machine:** {_mova_caps0['note']}"
                            if _mova_caps0["available"]
                            else f"**Unavailable:** {_mova_caps0['note']}")
@@ -1200,6 +1195,33 @@ def build_ui():
                             choices=[l for l, _ in _mova_infer.list_mova_loras()],
                             value="(none — MOVA base, no LoRA)", scale=4)
                         mova_lora_refresh = gr.Button("🔄", scale=1, min_width=48)
+                    # The reference is OPTIONAL and EMPTY by default. Leaving it empty is the whole
+                    # point of T2AV: at generate time we PAINT a prompt-matched still in the LoRA's
+                    # style (SDXL + IP-Adapter; style source = the LoRA's internal style frame) so the
+                    # SCENE follows the prompt. Auto-filling it with the LoRA's bundled ref.png (one
+                    # fixed frame) makes "uploaded reference always wins" fire and pins every
+                    # generation to that single scene -- which defeats the prompt-matched reference.
+                    # An explicit user upload still overrides (to pin a specific scene on purpose).
+                    mova_ref = gr.Image(
+                        label="Reference image (OPTIONAL). Leave empty — a prompt-matched still is "
+                              "painted in your LoRA's style so the scene follows your prompt. Upload "
+                              "only to pin a specific scene.",
+                        type="filepath", height=180, value=None)
+                    # Measured ceilings (user-confirmed). Pinokio is cross-OS: 240p all tiers; 480p
+                    # ≥16GB; 720p sits at the 24GB edge and works on LINUX with a clean (non-display)
+                    # GPU — but not on Windows, where the desktop compositor shares the card. So
+                    # tier+platform gate rather than hide it from Linux users.
+                    _v = detect_vram_gb(); _linux = sys.platform.startswith("linux")
+                    _mova_res_choices = ["320x240 (240p — trained baseline, fastest)"]
+                    if _v >= 16:
+                        _mova_res_choices.append("640x480 (480p — sharper, more VRAM/time)")
+                    if _v >= 24 and _linux:
+                        _mova_res_choices.append("960x720 (720p — Linux + clean GPU; at the VRAM edge)")
+                    mova_res = gr.Dropdown(
+                        label="Resolution", choices=_mova_res_choices, value=_mova_res_choices[0],
+                        info="240p all cards; 480p needs ~16GB+. 720p sits at the 24GB edge — shown "
+                             "only on Linux with a clean (non-display) GPU; on Windows the desktop "
+                             "shares the GPU, so it isn't offered there.")
                     with gr.Row():
                         mova_frames = gr.Slider(25, 81, value=81, step=8,
                             label="Frames (24fps)",
@@ -1207,9 +1229,34 @@ def build_ui():
                         mova_steps = gr.Slider(20, 50, value=50, step=5,
                             label="Denoise steps",
                             info="MOVA recipe = 50; fewer underdenoises.")
+                        mova_cfg = gr.Slider(1.0, 12.0, value=5.0, step=0.5,
+                            label="Guidance (CFG)",
+                            info="MOVA recipe = 5.0. Higher follows the prompt harder (risk of "
+                                 "artifacts); lower is looser.")
                     mova_btn = gr.Button(
                         "Generate A/V", variant="primary", interactive=_mova_ready)
                     mova_status = gr.Markdown()
+                    # Interactive continuation (mirrors the Wan 'Continue' mode): each step adds a clip
+                    # that starts from a chosen FINAL FRAME of the current video, driven by a NEW
+                    # prompt — the per-segment prompting that makes a multi-beat A/V coherent. The
+                    # resident MOVA worker holds the running clip; this only sends the next beat.
+                    with gr.Accordion("➕ Continue — extend with a new beat", open=False):
+                        gr.Markdown("Add a clip that continues from a final frame of the current "
+                                    "video, driven by a **new** prompt (a small motion beat). Pick the "
+                                    "frame to continue from, write what happens next, or let Qwen3-VL "
+                                    "suggest it. Repeat to build a longer, coherent scene.")
+                        mova_cont_gallery = gr.Gallery(
+                            label="Continue from this frame (ranked best-first: sharp + at a speech "
+                                  "pause). Click to override.",
+                            columns=5, height=120, interactive=False)
+                        mova_cont_pick = gr.State(0)
+                        mova_cont_prompt = gr.Textbox(
+                            label="Continuation prompt (the next beat)", lines=2,
+                            placeholder='moralorel, the boy turns to the dragon. He says, in English, "..."')
+                        with gr.Row():
+                            mova_cont_suggest = gr.Button("✨ Suggest next beat (Qwen3-VL)", scale=2)
+                            mova_cont_btn = gr.Button("Continue ▶", variant="primary", scale=2)
+                        mova_cont_status = gr.Markdown()
                     mova_lora_refresh.click(
                         lambda: gr.update(choices=[l for l, _ in _mova_infer.list_mova_loras()]),
                         outputs=[mova_lora])
@@ -1243,10 +1290,10 @@ def build_ui():
                 _BASIWAN_LIGHTNING_LORA = _basiwan_resolve_ckpt(
                     os.environ.get("BASIWAN_LIGHTNING_LORA"), _BASES,
                     "Wan2.2-Lightning/Wan2.2-T2V-A14B-4steps-lora-250928")
-                # [2026-06-09 #369] I2V expert pair + I2V Lightning LoRA for
-                # the Continue-from-last-frame feature. The T2V Lightning
-                # LoRA must NEVER be applied to I2V experts (verified: it
-                # destroys generation) — hence the separate Seko-V1 dir.
+                # I2V expert pair + I2V Lightning LoRA for the Continue-from-
+                # last-frame feature. The T2V Lightning LoRA must NEVER be
+                # applied to I2V experts (it destroys generation) — hence the
+                # separate Seko-V1 dir.
                 _BASIWAN_GGUF_HIGH_I2V = _basiwan_resolve_gguf(
                     os.environ.get("BASIWAN_GGUF_HIGH_I2V"), _BASES,
                     "QuantStack--Wan2.2-I2V-A14B-GGUF", "HighNoise",
@@ -1258,9 +1305,9 @@ def build_ui():
                 _BASIWAN_LIGHTNING_LORA_I2V = _basiwan_resolve_ckpt(
                     os.environ.get("BASIWAN_LIGHTNING_LORA_I2V"), _BASES,
                     "Wan2.2-Lightning/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1")
-                # [#388] VACE-Fun depth-control GGUF pair — the depth-locked
-                # QUALITY restyle model (validated depth-lock corr 0.973). NO
-                # Lightning (50-step/guide-5.0 recipe). Same layout-agnostic glob.
+                # VACE-Fun depth-control GGUF pair — the depth-locked QUALITY
+                # restyle model (depth-lock corr 0.973). NO Lightning
+                # (50-step/guide-5.0 recipe). Same layout-agnostic glob.
                 _BASIWAN_GGUF_HIGH_VACE = _basiwan_resolve_gguf(
                     os.environ.get("BASIWAN_GGUF_HIGH_VACE"), _BASES,
                     "QuantStack--Wan2.2-VACE-Fun-A14B-GGUF", "HighNoise",
@@ -1269,7 +1316,7 @@ def build_ui():
                     os.environ.get("BASIWAN_GGUF_LOW_VACE"), _BASES,
                     "QuantStack--Wan2.2-VACE-Fun-A14B-GGUF", "LowNoise",
                     "Wan2.2-VACE-Fun-A14B-LowNoise-Q4_K_M.gguf")
-                # [S5] Wan2.2-S2V (audio-driven talking character) — SINGLE-expert
+                # Wan2.2-S2V (audio-driven talking character) — SINGLE-expert
                 # GGUF (no HighNoise/LowNoise split, so the standard which-subdir
                 # resolver doesn't fit) + the checkpoint dir holding config.json +
                 # wav2vec2-large-xlsr-53-english/ (T5/VAE come from the T2V base).
@@ -1303,18 +1350,17 @@ def build_ui():
                     # RMS/LN_BF16 deliberately NOT set: model.py auto-gates
                     # norms to bf16 only at seq>50000 (p720_81f) where fp32
                     # transients blow the 24 GB VRAM wall. Pinning "0" here
-                    # caused the 2026-06-10 81f allocator-thrash hang. If a
-                    # stale daemon env (old start.js) still pins them, scrub:
+                    # causes an 81f allocator-thrash hang; scrub any inherited
+                    # value:
                     env.pop("BASIWAN_RMS_BF16", None)
                     env.pop("BASIWAN_LN_BF16", None)
                     # Same default everywhere; _cache_dir() expanduser()s it.
                     env.setdefault("BASIWAN_PACK_CACHE_DIR",
                                    str(Path.home() / ".cache" / "marlin_packs"))
-                    # [2026-06-10] Phase + per-step events power the live
-                    # progress bar in worker mode. Without this the bar froze
-                    # from "generation started" until the result — at 20
-                    # steps × guide>1 that's many opaque minutes. ~25 prints
-                    # per generation; negligible.
+                    # Phase + per-step events power the live progress bar in
+                    # worker mode. Without this the bar freezes from "generation
+                    # started" until the result — at 20 steps × guide>1 that's
+                    # many opaque minutes. ~25 prints per generation; negligible.
                     env.setdefault("BASIWAN_PHASE_PROFILE", "1")
                     return env
 
@@ -1323,7 +1369,7 @@ def build_ui():
                 import threading as _threading
                 _worker_holder: dict = {}
                 _worker_lock = _threading.Lock()
-                # [#371] Last successful Studio generation, for Continue:
+                # Last successful Studio generation, for Continue:
                 # {"tail_pngs": [paths sharpest-first], "mp4": str,
                 #  "prompt": str, "resolution": str}. Only updated on
                 # success, so a failed continuation keeps the previous
@@ -1378,17 +1424,20 @@ def build_ui():
                             except Exception:
                                 pass
                             _worker_holder.pop("runner", None)
+                        # Spawning a Wan worker: free the MOVA worker first (it holds ~17GB VRAM; the
+                        # two can't coexist on a 24GB card). Symmetric to MOVA freeing the Wan worker.
+                        _shutdown_mova_worker_if_idle()
                         if model_type == "i2v":
                             _gguf_high, _gguf_low = _BASIWAN_GGUF_HIGH_I2V, _BASIWAN_GGUF_LOW_I2V
                             _lora_dir = _BASIWAN_LIGHTNING_LORA_I2V
                         elif model_type == "vace":
-                            # [#388] depth-locked QUALITY restyle — VACE-Fun pair,
+                            # depth-locked QUALITY restyle — VACE-Fun pair,
                             # NO Lightning LoRA (runs the 50-step/guide-5.0 recipe
                             # the worker enforces from basi.vace.VACE_DEPTH_RECIPE).
                             _gguf_high, _gguf_low = _BASIWAN_GGUF_HIGH_VACE, _BASIWAN_GGUF_LOW_VACE
                             _lora_dir = None
                         elif model_type == "s2v":
-                            # [S5] audio-driven talking character — SINGLE-expert
+                            # audio-driven talking character — SINGLE-expert
                             # GGUF (same path for high/low; the runner ignores low),
                             # NO Lightning (worker enforces S2V_RECIPE 40-step/4.5).
                             _gguf_high = _gguf_low = _BASIWAN_GGUF_S2V
@@ -1396,13 +1445,12 @@ def build_ui():
                         else:
                             _gguf_high, _gguf_low = _BASIWAN_GGUF_HIGH, _BASIWAN_GGUF_LOW
                             _lora_dir = _BASIWAN_LIGHTNING_LORA
-                        # [#388] VACE boots FULLY RESIDENT (block-swap -1 = no
-                        # swap). At p480_17f the VACE pair fits on 24GB (validated),
-                        # and block-swap fragments the allocator enough to trip the
-                        # cuBLASLt F.linear 256 GiB heuristic bug — the validated
-                        # path ran resident. T2V/I2V take the VRAM-tier N (#392):
-                        # 24GB->2 (champion), 16GB->10, 12GB->20, <12->30. The old
-                        # hardcoded "2" would OOM a 12/16GB card; the tier adapts.
+                        # VACE boots FULLY RESIDENT (block-swap -1 = no swap). At
+                        # p480_17f the VACE pair fits on 24GB, and block-swap
+                        # fragments the allocator enough to trip the cuBLASLt
+                        # F.linear 256 GiB heuristic bug — so it runs resident.
+                        # T2V/I2V take the VRAM-tier N: 24GB->2 (champion),
+                        # 16GB->10, 12GB->20, <12->30 (the tier adapts per card).
                         _bswap = ("-1" if model_type == "vace"
                                   else str(_get_infer_tier()["block_swap_n"]))
                         _serve_cli = [
@@ -1424,7 +1472,7 @@ def build_ui():
                         # resolves to bin\miniconda\python.exe — it works
                         # (venv packages still load via the activated env)
                         # but ties the worker to PATH/activation state we
-                        # don't control. Observed live 2026-06-10.
+                        # don't control.
                         _worker_py = os.environ.get(
                             "BASIWAN_VENV_PYTHON", sys.executable)
                         if not Path(_worker_py).exists():
@@ -1459,15 +1507,82 @@ def build_ui():
                             pass
                     _worker_holder.pop("runner", None)
 
-                # [2026-06-09] Eager warm-up: start the cold load when the
-                # app launches, not on the first Generate click. The first
-                # ever start re-packs both experts (~12 min, writes the
-                # pack cache); cached starts are ~1-2 min. Either way the
-                # user's first click finds a warm (or warming) worker.
-                # BASIWAN_WORKER_EAGER=0 disables.
+                # --- MOVA persistent worker (env_mova) — the joint A/V model loads ONCE and serves
+                # the base generation + every interactive Continue, mirroring the Wan worker above.
+                _mova_worker_holder: dict = {}
+                _mova_worker_lock = _threading.Lock()
+                # Current MOVA continuation session, for the Continue UI:
+                # {"mp4": str, "tail_pngs": [best-first PNG paths], "prompt": str}.
+                _mova_last: dict = {}
+
+                def _ensure_mova_worker(lora_dir=None, progress_cb=None):
+                    """Return a ready BasiwanRunner for the persistent MOVA worker (mova_sample.py
+                    --serve, env_mova). Starts one if needed; a LoRA change forces a respawn (the LoRA
+                    is baked at load). Frees the Wan worker first — MOVA's group-offload onload needs
+                    the VRAM. Raises RunnerDied on failure with the worker log tail folded in."""
+                    _BR, _RD = _import_runner_client()
+                    from basi import mova_infer as _mi
+                    t0 = time.time()
+                    while not _mova_worker_lock.acquire(timeout=1.0):
+                        if progress_cb is not None:
+                            r = _mova_worker_holder.get("starting")
+                            tail = r.get_human_tail(1) if r is not None else []
+                            try:
+                                progress_cb(time.time() - t0, tail[0] if tail else "")
+                            except Exception:
+                                pass
+                    try:
+                        runner = _mova_worker_holder.get("runner")
+                        if (runner is not None and runner.is_alive()
+                                and _mova_worker_holder.get("lora", "") == (lora_dir or "")):
+                            return runner
+                        if runner is not None:
+                            try:
+                                runner.shutdown()
+                            except Exception:
+                                pass
+                            _mova_worker_holder.pop("runner", None)
+                        # Free the Wan worker (~9GB VRAM); MOVA onload needs ~12GB free.
+                        _shutdown_worker_if_idle()
+                        _serve_cli = ["--base", str(_mi.mova_base_dir()), "--serve", "--offload", "group"]
+                        if lora_dir and Path(lora_dir).exists():
+                            _serve_cli += ["--lora", lora_dir]
+                        runner = _BR(
+                            python=_mi.resolve_mova_python(),
+                            runner_script=str(BASI_ROOT / "tools" / "mova_sample.py"),
+                            cli_args=_serve_cli, env=_mi.mova_spawn_env(),
+                            cwd=str(BASI_ROOT))
+                        _mova_worker_holder["starting"] = runner
+                        try:
+                            runner.start(progress_cb)
+                        except _RD as e:
+                            tail = "\n".join(runner.get_human_tail(40))
+                            raise _RD(f"{e}\n\nMOVA worker log tail:\n{tail}") from e
+                        _mova_worker_holder["runner"] = runner
+                        _mova_worker_holder["lora"] = (lora_dir or "")
+                        return runner
+                    finally:
+                        _mova_worker_holder.pop("starting", None)
+                        _mova_worker_lock.release()
+
+                def _shutdown_mova_worker_if_idle():
+                    """Free the MOVA worker's VRAM + host RAM (e.g. before a Wan generation or Gym run)."""
+                    runner = _mova_worker_holder.get("runner")
+                    if runner is not None and runner.is_alive():
+                        try:
+                            runner.shutdown()
+                        except Exception:
+                            pass
+                    _mova_worker_holder.pop("runner", None)
+
+                # Eager warm-up: start the cold load at app launch, not on the
+                # first Generate click. The first ever start re-packs both
+                # experts (~12 min, writes the pack cache); cached starts are
+                # ~1-2 min. Either way the user's first click finds a warm (or
+                # warming) worker. BASIWAN_WORKER_EAGER=0 disables.
                 if (os.environ.get("BASIWAN_PERSISTENT_WORKER", "1") == "1"
                         and os.environ.get("BASIWAN_WORKER_EAGER", "1") == "1"
-                        # [#378] Belt-and-suspenders: a refused second instance
+                        # Belt-and-suspenders: a refused second instance
                         # exits before build_ui() runs, so this normally never
                         # sees a False flag — but never spawn a 20 GB worker
                         # without the lock if build_ui() is ever called bare.
@@ -1482,20 +1597,17 @@ def build_ui():
                         target=_eager_warm, name="basiwan-eager-warm",
                         daemon=True).start()
 
-                # [2026-06-09] Prefetch the Suggest-prompt VLM weights in the
-                # background at launch. Without this, the FIRST "Suggest next
-                # prompt" click triggered an 8.3 GB HF download mid-click —
-                # measured ~13 min of opaque wait on the user's machine.
-                # snapshot_download is network+disk only (no GPU/RAM), so it
-                # coexists with the worker warm-up. BASIWAN_PREFETCH_VLM=0
+                # Prefetch the Suggest-prompt VLM weights in the background at
+                # launch. Without this, the first "Suggest next prompt" click
+                # triggers an 8.3 GB HF download mid-click (~13 min of opaque
+                # wait). snapshot_download is network+disk only (no GPU/RAM), so
+                # it coexists with the worker warm-up. BASIWAN_PREFETCH_VLM=0
                 # disables.
                 if os.environ.get("BASIWAN_PREFETCH_VLM", "1") == "1":
                     def _prefetch_vlm():
                         # Suggest-button model (4B) first — small and
                         # interactive — then the tier-selected captioner
-                        # (8B at 24G: ~17 GB; the 2026-06-10 "dead
-                        # Auto-caption button" was this downloading
-                        # silently mid-click).
+                        # (8B at 24G: ~17 GB).
                         from basi.caption import MODEL_TIERS, select_model_for_vram
                         for mid in dict.fromkeys(
                                 [MODEL_TIERS[12], select_model_for_vram()]):
@@ -1522,16 +1634,12 @@ def build_ui():
                                      progress=gr.Progress()):
                     """Subprocess the vendored runner using same Pinokio Python.
 
-                    [2026-06-09] Inherit the canonical ship-recipe env from
-                    start.js (BASIWAN_V2=1, USE_PACK_CACHE=1, NO_POOL=1,
-                    VAE_BF16=1, etc.). The earlier override that forced
-                    BISECT_DEQUANT=1 + V2=0 + USE_PACK_CACHE=0 was based on
-                    a stale comment claiming the kernel wasn't built on
-                    Windows — but it IS built (verified at
-                    %LOCALAPPDATA%/torch_extensions/.../wan_q4k_q6k_basiwan_ext_r128.pyd)
-                    and the ship-recipe path produces 63s wall at p720_17f
-                    vs the legacy path's 200s+. See
-                    memory/canonical_ship_recipe_2026-06-08.md."""
+                    Inherits the canonical ship-recipe env from start.js
+                    (BASIWAN_V2=1, USE_PACK_CACHE=1, NO_POOL=1, VAE_BF16=1, etc.).
+                    The v2 CUDA kernel is built on Windows
+                    (%LOCALAPPDATA%/torch_extensions/.../wan_q4k_q6k_basiwan_ext_r128.pyd)
+                    and the ship-recipe path produces 63s wall at p720_17f vs the
+                    legacy path's 200s+."""
                     if not prompt or not prompt.strip():
                         return None, "**Error**: empty prompt"
                     if not Path(_BASIWAN_GGUF_HIGH).exists():
@@ -1573,52 +1681,46 @@ def build_ui():
 
                     env = _studio_env()
 
-                    # [2026-06-09] Persistent-worker path. When
-                    # BASIWAN_PERSISTENT_WORKER is "1" (default ON in
-                    # start.js), reuse a singleton subprocess.Popen of the
-                    # runner --serve mode across Studio Generate clicks.
-                    # Saves 250-700s subprocess re-init cost per click after
-                    # the first. Set to "0" to fall back to the legacy
-                    # subprocess-per-click path below. See
-                    # memory/cold_cache_penalty_root_caused_2026-06-09.md
-                    # and tools/runner_client.py.
-                    # [2026-06-10] Pre-flight wall estimate + VRAM-wall
-                    # warning. Anchor: 64s at p720/17f/4-steps/guide=1
-                    # (measured champion recipe). Scaling: steps linear;
-                    # guide != 1.0 doubles every step (CFG runs cond +
-                    # uncond); frames ~(f/17)^1.5 (attention superlinear);
-                    # resolution ~linear in pixels. ROUGH — order-of-
-                    # magnitude honesty, not a promise. The 2026-06-10
-                    # incident: 4h+ at 100% GPU because high frames at the
-                    # worker's fixed block-swap N=2 hit the 24 GB VRAM wall
-                    # and allocator thrash multiplied an already-big job.
-                    # [#392] RAM-axis worker gate: the persistent worker + eager
-                    # prewarm hold the ~19GB pack in page cache; on <32GB-RAM hosts
-                    # that thrashes (Wan2GP lesson + Continue-hang #380). If the env
-                    # is UNSET, follow the tier (off on low-RAM hosts). An explicit
-                    # BASIWAN_PERSISTENT_WORKER value always wins (honor user intent).
+                    # Persistent-worker path. When BASIWAN_PERSISTENT_WORKER is
+                    # "1" (default ON in start.js), reuse a singleton
+                    # subprocess.Popen of the runner --serve mode across Studio
+                    # Generate clicks. Saves 250-700s subprocess re-init cost per
+                    # click after the first. Set to "0" to fall back to the legacy
+                    # subprocess-per-click path below (see tools/runner_client.py).
+                    # Pre-flight wall estimate + VRAM-wall warning. Anchor: 64s at
+                    # p720/17f/4-steps/guide=1 (measured champion recipe). Scaling:
+                    # steps linear; guide != 1.0 doubles every step (CFG runs cond
+                    # + uncond); frames ~(f/17)^1.5 (attention superlinear);
+                    # resolution ~linear in pixels. ROUGH — order-of-magnitude
+                    # honesty, not a promise: high frames at a fixed block-swap N
+                    # can hit the 24 GB VRAM wall and allocator-thrash for hours.
+                    # RAM-axis worker gate: the persistent worker + eager prewarm
+                    # hold the ~19GB pack in page cache; on <32GB-RAM hosts that
+                    # thrashes. If the env is UNSET, follow the tier (off on
+                    # low-RAM hosts). An explicit BASIWAN_PERSISTENT_WORKER value
+                    # always wins (honor user intent).
                     _persist_env = os.environ.get("BASIWAN_PERSISTENT_WORKER")
                     if _persist_env is None:
                         _use_worker = _get_infer_tier()["persistent_worker"]
                     else:
                         _use_worker = _persist_env == "1"
-                    # [S5] S2V is EXCLUSIVE: when a driving audio is present the
+                    # S2V is EXCLUSIVE: when a driving audio is present the
                     # talking-character path takes precedence; null the other modes so
                     # mode-detection + request-building below can't double-fire.
                     if s2v_audio:
                         continue_image = None
                         restyle_video = None
                         kf_images = None
-                    # [#371] Continuation rides the I2V expert pair; plain
+                    # Continuation rides the I2V expert pair; plain
                     # generation rides T2V. _ensure_worker swaps the worker
                     # when the loaded pair doesn't match.
-                    # [#388] VACE depth-lock restyle rides the VACE-Fun pair.
+                    # VACE depth-lock restyle rides the VACE-Fun pair.
                     _vace_restyle = bool(
                         restyle_video and not continue_image
                         and restyle_mode == "Depth-lock (VACE)")
-                    # [#389] Keyframe-anchored editing: anchor images uploaded
+                    # Keyframe-anchored editing: anchor images uploaded
                     # (no restyle/continue). Parse + validate positions; routes to
-                    # the VACE worker (the GGUF-validated vace_edit path).
+                    # the VACE worker (the vace_edit path).
                     _kf_paths, _kf_pos, _kf_err = [], [], None
                     _kf_edit = bool(kf_images and not restyle_video
                                     and not continue_image)
@@ -1652,7 +1754,7 @@ def build_ui():
                             "Wan2.2-S2V-14B-Q4_K_M.gguf (QuantStack/Wan2.2-S2V-14B-GGUF) "
                             "+ the Wan2.2-S2V-14B dir (config.json + wav2vec2). Set "
                             "`BASIWAN_GGUF_S2V` / `BASIWAN_S2V_DIR`.")
-                    # [S10] System-aware gate: refuse S2V configs this GPU can't run so a
+                    # System-aware gate: refuse S2V configs this GPU can't run so a
                     # too-small card (or a 720p pick) can't brick. S2V is ~2x heavier than
                     # T2V; caps are measured (s2v_caps). The runtime residency cap is the
                     # backstop, but blocking here gives a clear message instead of an OOM.
@@ -1726,25 +1828,22 @@ def build_ui():
                             runner = _ensure_worker(_warm_cb, model_type=_mtype)
                         except Exception as e:
                             return None, f"### Worker failed to start\n\n```\n{e}\n```"
-                        # [#391] User-LoRA hot-swap. Resolve the dropdown
-                        # selection → build a cached Lightning+user combo →
-                        # set_lora on the live worker (no restart, ~0.3 s).
-                        # combo state is tracked PER RUNNER (runner._lora_key)
-                        # so a fresh/respawned worker re-applies rather than
-                        # silently dropping to plain Lightning.
-                        # [#385] Restyle quality recipe (measured A/B 2026-06-11,
-                        # restyle_steps_ab): the winning restyle config is
-                        # 8-step mid-entry with Lightning REDUCED to 0.7 —
-                        # s8_d6_L0.7 scored style_sim 0.812 + tightest structure
-                        # vs the old 4-step/L1.0 corner-cut at 0.750. Reduced
-                        # Lightning lets the high-noise expert (global style)
-                        # impose the style without distill dilution. The 0.7
-                        # only applies on the restyle path; plain T2V keeps 1.0
-                        # (and its byte-identical combo cache key).
+                        # User-LoRA hot-swap. Resolve the dropdown selection →
+                        # build a cached Lightning+user combo → set_lora on the
+                        # live worker (no restart, ~0.3 s). combo state is tracked
+                        # PER RUNNER (runner._lora_key) so a fresh/respawned worker
+                        # re-applies rather than silently dropping to plain Lightning.
+                        # Restyle quality recipe: 8-step mid-entry with Lightning
+                        # at 0.7 (denoise 0.6) scored style_sim 0.812 + tightest
+                        # structure vs 4-step/L1.0 at 0.750. Reduced Lightning lets
+                        # the high-noise expert (global style) impose the style
+                        # without distill dilution. The 0.7 only applies on the
+                        # restyle path; plain T2V keeps 1.0 (and its byte-identical
+                        # combo cache key).
                         _restyle_active = bool(
                             restyle_video and not continue_image
                             and float(denoise_strength) < 1.0
-                            and not _vace_restyle)  # [#388] SDEdit XOR VACE
+                            and not _vace_restyle)  # SDEdit XOR VACE
                         _light_s = (RESTYLE_SDEDIT_RECIPE["lightning_strength"]
                                     if _restyle_active else 1.0)
                         _combo_on = False        # Lightning+user combo (T2V): strength baked → pinned
@@ -1764,7 +1863,7 @@ def build_ui():
                                 # keyframe-edit (_kf_edit) is ALSO a 50-step full-CFG VACE path with NO
                                 # Lightning, so it must take the user-only LoRA branch like restyle --
                                 # else the T2V 4-step Lightning LoRA gets baked into the VACE-Fun experts
-                                # and silently degrades the edit (BUG fix 2026-06-19).
+                                # and silently degrades the edit.
                                 mtype=_mtype, vace_restyle=(_vace_restyle or _kf_edit), lora=lora,
                                 sel=_sel, lora_strength=lora_strength,
                                 light_s=_light_s,
@@ -1817,14 +1916,14 @@ def build_ui():
                         }
                         if continue_image:
                             _req_args["image"] = str(continue_image)
-                        # [S5] S2V talking character: reference image + driving audio.
+                        # S2V talking character: reference image + driving audio.
                         # frames (slider) = infer_frames per chunk; the worker enforces
                         # the S2V_RECIPE (40 steps / guide 4.5 / shift 3.0) regardless
                         # of the steps/guide passed, and uses width*height as max area.
                         if s2v_audio:
                             _req_args["audio"] = str(s2v_audio)
                             _req_args["image"] = str(s2v_ref)
-                        # [#385] SDEdit restyle: pass the uploaded source +
+                        # SDEdit restyle: pass the uploaded source +
                         # denoise to the worker (T2V path; mutually exclusive
                         # with continue_image). denoise>=1.0 is plain T2V.
                         # Force 8-step mid-entry (NOT the 4-step T2V slider): at
@@ -1832,18 +1931,17 @@ def build_ui():
                         # the high-noise expert that sets global style. 8-step +
                         # L0.7 (combo above) is the measured optimum — style_sim
                         # 0.812 vs the 4-step corner-cut 0.750, AND better
-                        # structure (A/B restyle_steps_ab 2026-06-11).
+                        # structure.
                         if _restyle_active:
                             _req_args["video"] = str(restyle_video)
                             _req_args["denoise_strength"] = float(denoise_strength)
                             _req_args["steps"] = 8
-                            # [#387] Any-length restyle: when the upload is longer
+                            # Any-length restyle: when the upload is longer
                             # than one window (`frames`), tile into overlapping
                             # windows — the worker injects each window's leading
                             # latents from the previous styled tail (continuity)
                             # and LAB color-matches the seam, then stitches. Probe
-                            # the frame count cheaply (packet timestamps, no
-                            # decode). GPU-validated seam continuity (#387).
+                            # the frame count cheaply (packet timestamps, no decode).
                             try:
                                 import torchvision as _tv
                                 _pts, _ = _tv.io.read_video_timestamps(
@@ -1853,21 +1951,21 @@ def build_ui():
                                 _nframes = 0
                             if _nframes > int(frames):
                                 _req_args["sliding"] = True
-                        # [#388] Depth-lock (VACE) restyle: send the source + the
+                        # Depth-lock (VACE) restyle: send the source + the
                         # vace_depth flag; the worker extracts depth and ENFORCES
-                        # the validated 50-step / guide-5.0 / shift-3.0 recipe
-                        # (steps/guide here are advisory — the worker overrides
-                        # from basi.vace.VACE_DEPTH_RECIPE so the 0.973 depth-lock
+                        # the 50-step / guide-5.0 / shift-3.0 recipe (steps/guide
+                        # here are advisory — the worker overrides from
+                        # basi.vace.VACE_DEPTH_RECIPE so the 0.973 depth-lock
                         # settings can't drift). Full denoise (no SDEdit denoise).
                         elif _vace_restyle:
                             _req_args["video"] = str(restyle_video)
                             _req_args["vace_depth"] = True
                             _req_args["steps"] = 50
                             _req_args["guide"] = 5.0
-                        # [#389] Keyframe-anchored editing: send the anchor frames
+                        # Keyframe-anchored editing: send the anchor frames
                         # + positions; the worker builds the VACE guide+mask and
-                        # HARD-LOCKS the anchor latents (validated near-perfect
-                        # preservation). Same 50-step/guide-5.0 recipe.
+                        # HARD-LOCKS the anchor latents (near-perfect preservation).
+                        # Same 50-step/guide-5.0 recipe.
                         elif _kf_edit:
                             _req_args["vace_edit"] = True
                             _req_args["anchor_images"] = _kf_paths
@@ -1876,7 +1974,7 @@ def build_ui():
                             _req_args["guide"] = 5.0
                         import uuid as _uuid
                         _req_id = str(_uuid.uuid4())
-                        # [#393] Pre-flight ETA from the EMA cache (or the formula
+                        # Pre-flight ETA from the EMA cache (or the formula
                         # until it warms). Uses the EFFECTIVE steps/guide in
                         # _req_args (restyle=8, VACE=50 already applied above), so
                         # the estimate matches what actually runs. Source is
@@ -1901,7 +1999,7 @@ def build_ui():
                                 if kind == "phase":
                                     nm = ev.get("name", "")
                                     if nm == "weights_page_in":
-                                        # [#380] First gen after a model swap:
+                                        # First gen after a model swap:
                                         # the ~19 GB pack pages in off disk.
                                         # Show it instead of a frozen bar.
                                         progress(
@@ -1918,7 +2016,7 @@ def build_ui():
                                         # reads as working, not hung.
                                         _i = ev.get("i", 0)
                                         _n = max(ev.get("n", 1), 1)
-                                        # [#393] Live remaining-time countdown,
+                                        # Live remaining-time countdown,
                                         # projected from steps done so far — a real
                                         # ETA, not just elapsed.
                                         _rem = _eta.remaining_live(
@@ -1998,7 +2096,7 @@ def build_ui():
                             video_uint = ((video[0] + 1.0) * 127.5).clamp(0, 255).byte()
                             video_uint = video_uint.permute(1, 2, 3, 0).numpy()
 
-                        # [#371] Continuation stitch: the new clip's frame 0
+                        # Continuation stitch: the new clip's frame 0
                         # IS the conditioning frame (== a tail frame of the
                         # previous clip), so drop it before appending —
                         # otherwise the seam holds for 2 frames.
@@ -2017,7 +2115,7 @@ def build_ui():
                                 codec="libx264", quality=8, pixelformat="yuv420p",
                             )
 
-                        # [#371] Save the last 5 frames for Continue, ranked
+                        # Save the last 5 frames for Continue, ranked
                         # sharpest-first by Laplacian variance — the exact
                         # last frame is often motion-blurred (the FinalFrame
                         # 5-frame-picker insight). Pure numpy, no cv2 dep.
@@ -2057,7 +2155,7 @@ def build_ui():
                         wall = meta_data.get("wall_s", "?")
                     except Exception:
                         wall = "?"
-                    # [#393] Fold this run's MEASURED wall into the EMA cache so the
+                    # Fold this run's MEASURED wall into the EMA cache so the
                     # next same-shape estimate is exact. Guarded: _req_args/_gpu
                     # only exist on the worker path; wall may be "?" on failure.
                     if _use_worker and isinstance(wall, (int, float)):
@@ -2101,7 +2199,7 @@ def build_ui():
                     except Exception:
                         pass  # fall through; from_pretrained handles it
                     try:
-                        # [2026-06-10] The VLM sees all 5 tail frames, picks
+                        # The VLM sees all 5 tail frames, picks
                         # the best continuation point AND writes the prompt
                         # in one call — it judges mid-blink/motion-smear/
                         # pose continuability, which the Laplacian ranking
@@ -2139,7 +2237,7 @@ def build_ui():
                         lora, lora_strength, continue_image=png,
                         progress=progress)
 
-                # [C4] Mode selector -> reveal only the active mode's controls.
+                # Mode selector -> reveal only the active mode's controls.
                 # T2V keeps the top-level Generate button; each other mode uses its
                 # own button inside its (now-revealed) accordion.
                 def _select_studio_mode(mode):
@@ -2173,7 +2271,7 @@ def build_ui():
                 ).then(_refresh_tail_gallery,
                        outputs=[continue_gallery, continue_pick])
 
-                # [#385] Restyle button → same handler, with the source video +
+                # Restyle button → same handler, with the source video +
                 # denoise threaded in (continue_image=None via state).
                 restyle_btn.click(
                     _studio_generate,
@@ -2181,11 +2279,11 @@ def build_ui():
                             studio_steps, studio_seed, studio_guide,
                             studio_lora, studio_lora_strength,
                             _restyle_no_continue, restyle_video, restyle_denoise,
-                            restyle_mode],  # [#388] SDEdit vs depth-lock (VACE)
+                            restyle_mode],  # SDEdit vs depth-lock (VACE)
                     outputs=[studio_video, studio_status],
                 )
 
-                # [#389] Keyframe edit → same handler. continue_image + restyle_video
+                # Keyframe edit → same handler. continue_image + restyle_video
                 # are both None (via the shared no-continue state); restyle_denoise /
                 # restyle_mode are positional fillers the kf path ignores; the anchor
                 # files + positions arrive in the trailing kf_images / kf_positions.
@@ -2200,7 +2298,7 @@ def build_ui():
                     outputs=[studio_video, studio_status],
                 )
 
-                # [S5] Talking character (S2V) → same handler. continue_image /
+                # Talking character (S2V) → same handler. continue_image /
                 # restyle_video / kf_images / kf_positions are all None (via the
                 # shared no-continue state) so the s2v branch fires exclusively;
                 # denoise / mode are positional fillers the s2v path ignores; the
@@ -2218,11 +2316,11 @@ def build_ui():
                     api_name="generate_s2v",  # unambiguous endpoint (4 btns share fn)
                 )
 
-                # [MI3] Joint A/V (MOVA): text -> audio+video. Spawns tools/mova_sample.py in the
+                # Joint A/V (MOVA): text -> audio+video. Spawns tools/mova_sample.py in the
                 # env_mova venv (cross-platform, no bash/WSL) and streams it; the resulting mp4
                 # (with audio) plays in the shared Studio output. Separate from _studio_generate
                 # (different model, different venv, one-off subprocess, not the GGUF worker).
-                def _mova_generate(prompt, lora_label, frames, steps):
+                def _mova_generate(prompt, lora_label, ref_path, trigger, res, frames, steps, cfg):
                     from basi import mova_infer as _mi
                     if not (prompt or "").strip():
                         yield None, "Enter a prompt — MOVA generates audio+video from text."
@@ -2244,35 +2342,158 @@ def build_ui():
                     out_dir = WORKSPACES / "_studio" / "mova"
                     out_dir.mkdir(parents=True, exist_ok=True)
                     stamp = f"mova_{int(time.time())}"
-                    cmd = _mi.gen_mova_sample_command(
-                        python=_mi.resolve_mova_python(), base=str(_mi.mova_base_dir()),
-                        lora_dir=lora_dir, prompt=prompt.strip(), out_dir=str(out_dir),
-                        tag=stamp, height=240, width=320, frames=int(frames), steps=int(steps))
-                    last = ""
-                    # Re-activate env_mova for the child (Pinokio runs us in the MAIN env; a bare
-                    # spawn would load the wrong CUDA/MKL DLLs -> 0xC0000005). See mova_spawn_env.
-                    for chunk in _stream_cmd(cmd, env=_mi.mova_spawn_env()):
-                        last = chunk
-                        yield None, ("**Generating MOVA A/V…** (loads the model on first run; "
-                                     "~minutes)\n\n```\n" + "\n".join(chunk.splitlines()[-15:])
-                                     + "\n```")
-                    outpath = None
-                    for line in last.splitlines():
-                        if line.startswith("MOVA_SAMPLE_OUT|"):
-                            outpath = line.split("|", 1)[1].strip()
+                    # MOVA is I2V: the reference frame sets the SCENE + STYLE. An uploaded reference
+                    # always wins. Otherwise (the general case) we MANUFACTURE a per-prompt reference:
+                    # SDXL + IP-Adapter style transfer takes the LoRA's in-style frame (ref.png) +
+                    # this prompt -> a styled, scene-matched still -> MOVA animates it. This is the
+                    # T2AV per-prompt style reference (IP-Adapter scale 0.6). It runs in env_mova (same
+                    # env as MOVA: SDXL+IP via diffusers). If it can't run (SDXL absent / failure) we
+                    # fall back to the LoRA's static ref.png but WARN that the scene won't match the
+                    # prompt -- never a silent scene-lock.
+                    _ref = (ref_path or "").strip() or None
+                    _style_src = _mi.mova_lora_style_ref(lora_dir) if lora_dir else None
+                    if lora_dir and not _ref and _style_src:
+                        try:
+                            yield None, ("🎨 Painting a prompt-matched reference in your LoRA's style "
+                                         "(SDXL + IP-Adapter)…")
+                            _sref = _mi.make_style_reference(
+                                prompt=prompt.strip(), style_ref=_style_src,
+                                out_dir=str(out_dir / f"styleref_{stamp}"),
+                                python=_mi.resolve_mova_python(), env=_mi.mova_spawn_env(),
+                                trigger=(trigger or "").strip())
+                            if _sref and Path(_sref).exists():
+                                _ref = _sref
+                            else:
+                                _ref = _style_src
+                                yield None, ("⚠️ SDXL not provisioned — using the LoRA's default "
+                                             "reference; the SCENE may not match your prompt (style "
+                                             "will be correct). Re-run Install to enable prompt-matched "
+                                             "scenes, or upload your own reference.")
+                        except Exception as _e:
+                            print(f"[basiwan] style-reference maker failed ({_e}); using bundled ref",
+                                  flush=True)
+                            _ref = _style_src
+                            yield None, ("⚠️ Couldn't paint a prompt-matched reference; using the "
+                                         "LoRA's default reference (scene may not match the prompt).")
+                    if lora_dir and not _ref and not _style_src:
+                        yield None, ("⚠️ No reference image for this LoRA — MOVA is image-to-video, "
+                                     "and without an in-style reference the style is lost (photoreal "
+                                     "output). Upload a reference frame in your LoRA's style.")
+                        return
+                    # Spawn (or reuse) the resident MOVA worker, then send a 'start' request: it
+                    # generates clip 0 AND seeds the continuation session (the worker holds the running
+                    # clip + ranked tail frames for the Continue UI below).
+                    yield None, "⏳ Loading MOVA (resident; first run ~minutes)…"
+                    try:
+                        runner = _ensure_mova_worker(lora_dir=lora_dir)
+                    except Exception as _e:
+                        yield None, f"### MOVA worker failed to start\n\n```\n{_e}\n```"
+                        return
+                    import uuid as _uuid, re as _re
+                    _rm = _re.match(r"\s*(\d+)x(\d+)", res or "")
+                    _w, _h = (int(_rm.group(1)), int(_rm.group(2))) if _rm else (320, 240)
+                    _args = {"mode": "start", "prompt": prompt.strip(), "ref": _ref,
+                             "out_dir": str(out_dir), "out_tag": stamp, "height": _h, "width": _w,
+                             "frames": int(frames), "steps": int(steps), "cfg": float(cfg)}
+                    yield None, "🎬 Generating MOVA A/V… (resident model)"
+                    outpath, tails = None, []
+                    try:
+                        for ev in runner.generate(_uuid.uuid4().hex, _args):
+                            _e = ev.get("event")
+                            if _e == "result":
+                                outpath = ev.get("out_mp4"); tails = ev.get("tail_pngs") or []
+                            elif _e == "error":
+                                yield None, f"### MOVA error: {ev.get('kind')}\n\n{ev.get('msg', '')}"
+                                return
+                    except Exception as _e:
+                        _t = "\n".join(runner.get_human_tail(25)) if runner else str(_e)
+                        yield None, f"### MOVA worker died\n\n```\n{_t}\n```"
+                        return
                     if outpath and Path(outpath).exists():
-                        yield outpath, "✅ **MOVA A/V generated** (audio + video)."
+                        _mova_last.clear()
+                        _mova_last.update({"mp4": outpath, "tail_pngs": tails, "prompt": prompt.strip()})
+                        yield outpath, ("✅ **MOVA A/V generated.** Use **➕ Continue** below to extend "
+                                        "it with a new beat.")
                     else:
-                        yield None, ("### MOVA generation failed\n\n```\n"
-                                     + "\n".join(last.splitlines()[-25:]) + "\n```")
+                        yield None, "### MOVA generation produced no output file."
+
+                def _mova_refresh_gallery():
+                    return gr.update(value=_mova_last.get("tail_pngs") or []), 0
+
+                def _mova_pick_tail(evt: gr.SelectData):
+                    return evt.index
+
+                def _mova_suggest(direction_text, progress=gr.Progress()):
+                    if not _mova_last.get("tail_pngs"):
+                        return gr.update(), gr.update(), "Generate a MOVA clip first."
+                    try:
+                        from basi.caption import suggest_continuation_with_pick
+                        idx, suggestion, why = suggest_continuation_with_pick(
+                            _mova_last["tail_pngs"], _mova_last.get("prompt", ""),
+                            user_direction=direction_text or "")
+                        note = (f"🖼️ picked **frame {idx + 1}** of {len(_mova_last['tail_pngs'])}"
+                                + (f" — {why}" if why else "")
+                                + ". Click a different frame to override.")
+                        return suggestion, idx, note
+                    except Exception as _e:
+                        return gr.update(), gr.update(), f"(suggestion failed: {_e})"
+
+                def _mova_continue(c_prompt, pick_idx, frames, steps, cfg, progress=gr.Progress()):
+                    if not _mova_last.get("tail_pngs"):
+                        yield None, "### Nothing to continue — generate a MOVA clip first."
+                        return
+                    if not (c_prompt or "").strip():
+                        yield None, "Enter a continuation prompt (the next beat)."
+                        return
+                    runner = _mova_worker_holder.get("runner")
+                    if runner is None or not runner.is_alive():
+                        yield None, ("### MOVA worker not running\n\nGenerate a clip first — that loads "
+                                     "the resident model the Continue step reuses.")
+                        return
+                    out_dir = WORKSPACES / "_studio" / "mova"
+                    stamp = f"mova_{int(time.time())}"
+                    import uuid as _uuid
+                    _args = {"mode": "continue", "prompt": c_prompt.strip(),
+                             "pick_index": int(pick_idx or 0), "out_dir": str(out_dir),
+                             "out_tag": stamp, "frames": int(frames), "steps": int(steps),
+                             "cfg": float(cfg)}
+                    yield None, "🎬 Extending from the chosen frame… (resident model)"
+                    outpath, tails = None, []
+                    try:
+                        for ev in runner.generate(_uuid.uuid4().hex, _args):
+                            _e = ev.get("event")
+                            if _e == "result":
+                                outpath = ev.get("out_mp4"); tails = ev.get("tail_pngs") or []
+                            elif _e == "error":
+                                yield None, f"### Continue error: {ev.get('kind')}\n\n{ev.get('msg', '')}"
+                                return
+                    except Exception as _e:
+                        _t = "\n".join(runner.get_human_tail(25)) if runner else str(_e)
+                        yield None, f"### MOVA worker died\n\n```\n{_t}\n```"
+                        return
+                    if outpath and Path(outpath).exists():
+                        _mova_last.update({"mp4": outpath, "tail_pngs": tails, "prompt": c_prompt.strip()})
+                        yield outpath, "✅ Extended. Continue again for another beat, or you're done."
+                    else:
+                        yield None, "### Continue produced no output file."
+
                 mova_btn.click(
                     _mova_generate,
-                    inputs=[mova_prompt, mova_lora, mova_frames, mova_steps],
+                    inputs=[mova_prompt, mova_lora, mova_ref, mova_trigger, mova_res, mova_frames, mova_steps, mova_cfg],
                     outputs=[studio_video, mova_status],
                     api_name="generate_mova",
-                )
+                ).then(_mova_refresh_gallery, outputs=[mova_cont_gallery, mova_cont_pick])
+                mova_cont_gallery.select(_mova_pick_tail, outputs=[mova_cont_pick])
+                mova_cont_suggest.click(
+                    _mova_suggest, inputs=[mova_cont_prompt],
+                    outputs=[mova_cont_prompt, mova_cont_pick, mova_cont_status])
+                mova_cont_btn.click(
+                    _mova_continue,
+                    inputs=[mova_cont_prompt, mova_cont_pick, mova_frames, mova_steps, mova_cfg],
+                    outputs=[studio_video, mova_cont_status],
+                ).then(_mova_refresh_gallery, outputs=[mova_cont_gallery, mova_cont_pick])
 
-                # [MOVA] LLM 'magic rewrite': reshape the user's rough idea into the correct
+                # LLM 'magic rewrite': reshape the user's rough idea into the correct
                 # MOVA prompt format (trigger + visual sentence + verbatim spoken-words clause)
                 # using the same Qwen VLM as Suggest/caption. Rewrites the shared prompt box.
                 def _mova_rewrite(prompt, trigger, progress=gr.Progress()):
@@ -2310,7 +2531,7 @@ def build_ui():
                     # COLUMN 1: Configure
                     with gr.Column():
                         gr.Markdown("## 1 · Configure")
-                        # [C3] Training type: Wan video-only LoRA (musubi) vs MOVA joint
+                        # Training type: Wan video-only LoRA (musubi) vs MOVA joint
                         # audio+video LoRA. The shared fields below (name, dataset, trigger,
                         # epochs, sample prompts) apply to both; the MOVA path routes to the
                         # validated basi/mova_train (240p NF4, per-epoch A/V samples) and
@@ -2318,12 +2539,12 @@ def build_ui():
                         gym_train_type = gr.Radio(
                             ["Wan video LoRA", "MOVA audio+video LoRA"],
                             value="Wan video LoRA", label="Training type",
-                            info="MOVA = joint audio+video (needs clips with sound).")
-                        # [MOVA] pre-flight estimate (s/step, total time, VRAM, desktop
+                            info="MOVA = joint audio+video LoRA (dataset clips need embedded audio).")
+                        # pre-flight estimate (s/step, total time, VRAM, desktop
                         # headroom) -> only shown for MOVA; updates as preset/frames/epochs/
                         # repeats/dataset change. Measured-on-4090 basis (see mova_train.py).
                         mova_estimate = gr.Markdown(visible=False)
-                        # [MOVA] live training analytics: parses this run's train.log into the
+                        # live training analytics: parses this run's train.log into the
                         # convergence read-out (best/lowest-loss epoch, audio-overtrain point,
                         # sustained s/step, peak VRAM) so users SEE the data and make their own
                         # stop call. Complements the live loss_chart (the curve) with the
@@ -2371,7 +2592,7 @@ def build_ui():
                         # basi/dataset.py SUPPORTED_RESOLUTIONS. Free sliders would let
                         # users pick unsupported sizes and musubi silently snaps,
                         # wasting training time. Dropdown of valid pairs enforces.
-                        # [C3] Resolution choices differ by training type: Wan2.2 has 8
+                        # Resolution choices differ by training type: Wan2.2 has 8
                         # fixed buckets; MOVA A/V trains at 240p (4:3 or 16:9). The
                         # gym_train_type radio swaps these (see _on_train_type below).
                         # Values are "WxH" (width x height), parsed in gen_train_command.
@@ -2385,10 +2606,24 @@ def build_ui():
                             ("720×1280 (portrait 720p std)", "720x1280"),
                             ("1280×720 (landscape 720p std)", "1280x720"),
                         ]
+                        # MOVA training res (measured, user-confirmed): 240p all tiers; ~360p on
+                        # 16GB+; 480p training sits at the 24GB edge and works on LINUX with a clean
+                        # GPU (not Windows). 360 isn't %16, so ~360p buckets use 352 lines.
                         _MOVA_RES_CHOICES = [
-                            ("320×240 (4:3)", "320x240"),
-                            ("416×240 (16:9)", "416x240"),
+                            ("320×240 (4:3, 240p)", "320x240"),
+                            ("416×240 (16:9, 240p)", "416x240"),
                         ]
+                        _mv = detect_vram_gb()
+                        if _mv >= 16:
+                            _MOVA_RES_CHOICES += [
+                                ("464×352 (4:3, ~360p)", "464x352"),
+                                ("624×352 (16:9, ~360p)", "624x352"),
+                            ]
+                        if _mv >= 24 and sys.platform.startswith("linux"):
+                            _MOVA_RES_CHOICES += [
+                                ("640×480 (4:3, 480p — Linux/clean GPU)", "640x480"),
+                                ("832×480 (16:9, 480p — Linux/clean GPU)", "832x480"),
+                            ]
                         resolution_choice = gr.Dropdown(
                             _WAN_RES_CHOICES,
                             value="832x480",
@@ -2397,7 +2632,7 @@ def build_ui():
                                 "Train at 832×480; Wan2.2 generalizes to 1280×720 at "
                                 "inference. Smaller=faster training, less VRAM. Off-bucket "
                                 "values aren't supported by Wan2.2 so the list is fixed. "
-                                "(MOVA A/V uses 240p buckets.)"
+                                "(MOVA A/V: 240p; ~360p on 16GB+; 480p on Linux+24GB clean GPU.)"
                             ),
                         )
                         # Default to 33f (safe everywhere except 8/12g — see preset
@@ -2432,9 +2667,8 @@ def build_ui():
                         )
                         # T4.H: advanced optimizer args (hidden by default).
                         with gr.Accordion("Advanced optimizer", open=False) as adv_opt_acc:
-                            # [2026-06-09] Defaults updated to match Wan2.2 LoRA
-                            # research brief — all still user-editable. See
-                            # memory/wan22_lora_training_brief_2026-06-09.md.
+                            # Defaults match the Wan2.2 LoRA research brief —
+                            # all still user-editable.
                             adv_lr_scheduler = gr.Dropdown(
                                 ["", "constant_with_warmup", "cosine",
                                  "cosine_with_restarts", "linear",
@@ -2472,8 +2706,8 @@ def build_ui():
                                     "after lr drops."
                                 ),
                             )
-                        # [2026-06-09] max_epochs default 20 → 16 per research
-                        # (8 evaluable checkpoints at save_every=2). User-editable.
+                        # max_epochs default 16 per research (8 evaluable
+                        # checkpoints at save_every=2). User-editable.
                         max_epochs = gr.Slider(
                             1, 100, value=GYM["epochs"], step=1, label="Max train epochs",
                             info=(
@@ -2504,6 +2738,15 @@ def build_ui():
                                 "without the trigger to detect identity bleed."
                             ),
                         )
+                        # MOVA-only: the visual STYLE descriptor for the prompt-driven A/V reference
+                        # maker (SDXL+IP-Adapter). 3-5 words naming the medium+look. Authoritative
+                        # over the VLM's auto-suggestion (small VLMs mis-ID material, e.g. clay as
+                        # "2D cel"). Blank -> the Gym auto-suggests one at train time. Ignored by Wan.
+                        mova_style_descriptor = gr.Textbox(
+                            label="Style descriptor (MOVA A/V — for prompt-driven references)",
+                            value="", placeholder="claymation, stop-motion clay figures",
+                            info="3-5 words: the show's medium + look. Used to render per-prompt "
+                                 "reference frames in your style. Blank = auto-detect at train time.")
                         # MOVA A/V sample prompts need the trigger + visual + verbatim
                         # spoken-words shape. One-click LLM rewrite (uses the trigger field
                         # above). Only meaningful for MOVA A/V training; harmless otherwise.
@@ -2524,9 +2767,9 @@ def build_ui():
                         with gr.Row():
                             ingest_btn = gr.Button("Ingest + Scan", variant="primary")
                             caption_btn = gr.Button("Auto-caption (Qwen-VL)", variant="secondary")
-                        # [2026-06-10 T9.A] Long-source path: scene-detect a
-                        # big video into 2-5s single-shot clips (the dataset
-                        # recipe shape) instead of asking users to cut by hand.
+                        # Long-source path: scene-detect a big video into 2-5s
+                        # single-shot clips (the dataset recipe shape) instead of
+                        # asking users to cut by hand.
                         with gr.Accordion("Auto-split long video into clips", open=False):
                             gr.Markdown(
                                 "For source material that isn't clip-sized "
@@ -2579,14 +2822,11 @@ def build_ui():
                     # COLUMN 3: Train
                     with gr.Column():
                         gr.Markdown("## 3 · Train")
-                        # [2026-06-10] One button. The previous three-step
-                        # flow (Generate scripts → Run cache → Run training)
-                        # exposed plumbing the user shouldn't have to know.
-                        # The pipeline prepares configs, precomputes the
-                        # latent/text caches, then trains — sequential, with
-                        # all logs streaming below and a Stop that works at
-                        # any stage. The manual per-step buttons live in the
-                        # Advanced accordion for debugging.
+                        # One button: prepare configs, precompute the latent/text
+                        # caches, then train — sequential, with all logs streaming
+                        # below and a Stop that works at any stage. The manual
+                        # per-step buttons live in the Advanced accordion for
+                        # debugging.
                         train_pipeline_btn = gr.Button(
                             "🚀 Train LoRA", variant="primary", size="lg")
                         stop_train_btn = gr.Button("⏹ Stop", variant="stop")
@@ -2788,7 +3028,7 @@ def build_ui():
                 target_frames.change(_check_frame_cap, inputs=[preset_dd, target_frames],
                                      outputs=[frame_warning])
 
-                # [C3] Switching Wan <-> MOVA swaps the dependent fields so the visible
+                # Switching Wan <-> MOVA swaps the dependent fields so the visible
                 # preset / resolution / expert match the chosen trainer (the MOVA branch in
                 # _train_pipeline reads these -> what you see is what runs). MOVA has no
                 # high/low expert choice, so that field is hidden for it.
@@ -2804,9 +3044,9 @@ def build_ui():
                         pkey = next((k for k, v in MOVA_PRESETS.items() if v is mp),
                                     list(MOVA_PRESETS)[-1])
                         return (gr.update(choices=list(MOVA_PRESETS.keys()), value=pkey,
-                                          label="MOVA preset (A/V, 240p NF4)"),
+                                          label="MOVA preset (A/V, NF4)"),
                                 gr.update(choices=_MOVA_RES_CHOICES, value="320x240",
-                                          label="Resolution (MOVA 240p)"),
+                                          label="Resolution (MOVA)"),
                                 gr.update(visible=False),   # expert_dd (Wan high/low)
                                 gr.update(visible=True),    # mova_analytics_btn
                                 # 81f@24fps = 3.4s is the proven MOVA len; widen the cap to the
@@ -2841,7 +3081,7 @@ def build_ui():
                                                loss_chart, _wan_preview_hdr, preview_btn,
                                                preview_video])
 
-                # [MOVA] training analytics: parse outputs/<lora_name>/train.log -> convergence
+                # training analytics: parse outputs/<lora_name>/train.log -> convergence
                 # read-out. On demand (cheap; reads a text file). Shows the best epoch + the
                 # audio-overtrain warning + sustained s/step, so the user can stop at the right
                 # epoch rather than guessing.
@@ -2852,7 +3092,7 @@ def build_ui():
                 mova_analytics_btn.click(_mova_analytics, inputs=[lora_name],
                                          outputs=[mova_analytics])
 
-                # [MOVA] live pre-flight estimate: s/step, total time, VRAM, desktop headroom.
+                # live pre-flight estimate: s/step, total time, VRAM, desktop headroom.
                 # Only for MOVA; recomputed when preset / frames / epochs / repeats / dataset
                 # change. Clip count read from the dataset dir; numbers are 4090-measured.
                 def _mova_est(tt, dataset_dir, preset_key, frames, epochs, repeats):
@@ -2897,7 +3137,7 @@ def build_ui():
                            num_repeats, dataset_dir_box):
                     _c.change(_mova_est, inputs=_mova_est_in, outputs=[mova_estimate])
                 def _train_pipeline(gym_train_type, workspace_name, dataset_dir, preset_key,
-                                    expert_choice, trigger, samp_prompt,
+                                    expert_choice, trigger, samp_prompt, style_descriptor,
                                     n_epochs, samp_every, t_frames, res_choice,
                                     n_repeats, res_state, lr_sched, lr_warm,
                                     grad_clip, w_decay):
@@ -2909,8 +3149,8 @@ def build_ui():
                     def _out(md, c, t, log):
                         return md, c, t, log
 
-                    # [C3] MOVA joint audio+video LoRA -> the validated basi/mova_train
-                    # path (240p NF4, latent cache, per-epoch A/V samples). Reuses the
+                    # MOVA joint audio+video LoRA -> the basi/mova_train path
+                    # (240p NF4, latent cache, per-epoch A/V samples). Reuses the
                     # shared name/dataset/trigger/epochs/sample fields + _spawn_script
                     # streaming + Stop button. Wan training falls through below.
                     if gym_train_type and "MOVA" in str(gym_train_type):
@@ -2933,7 +3173,8 @@ def build_ui():
                                 max_train_epochs=int(n_epochs),
                                 save_every_n_epochs=1,   # MOVA: sample/checkpoint every epoch (validated)
                                 num_repeats=int(n_repeats), trigger_word=(trigger or None),
-                                sample_prompts=sp)
+                                sample_prompts=sp,
+                                style_descriptor=(style_descriptor or "").strip() or None)
                             plan = prepare_mova_training_run(mcfg)
                         except Exception as e:
                             yield _out(f"❌ MOVA prepare failed: {type(e).__name__}: {e}",
@@ -3021,7 +3262,7 @@ def build_ui():
                 train_pipeline_btn.click(
                     _train_pipeline,
                     inputs=[gym_train_type, lora_name, dataset_dir_box, preset_dd, expert_dd,
-                            trigger_word, sample_prompt, max_epochs,
+                            trigger_word, sample_prompt, mova_style_descriptor, max_epochs,
                             sample_every, target_frames, resolution_choice,
                             num_repeats, resume_state, adv_lr_scheduler,
                             adv_lr_warmup, adv_grad_clip, adv_weight_decay],
@@ -3249,14 +3490,13 @@ def build_ui():
     return demo
 
 
-# [2026-06-11 #378] Single-instance guard. The port probe below
-# deliberately walks upward when 7860 is busy, so the OS port bind is NOT a
-# cross-process lock — two app.py processes happily coexist on 7860/7861,
-# and each eager-spawns a ~20 GB worker (host-RAM contention + the #380
-# Continue-hang amplifier). This lock file is the real guard. Semantics:
-# REFUSE (never auto-kill — see memory/feedback_never_wildcard_kill). A
-# second instance whose predecessor is verifiably alive exits cleanly with
-# a message; a stale lock (dead PID or unresponsive port) is reclaimed.
+# Single-instance guard. The port probe below deliberately walks upward when
+# 7860 is busy, so the OS port bind is NOT a cross-process lock — two app.py
+# processes happily coexist on 7860/7861, and each eager-spawns a ~20 GB worker
+# (host-RAM contention + Continue-hang amplifier). This lock file is the real
+# guard. Semantics: REFUSE, never auto-kill. A second instance whose predecessor
+# is verifiably alive exits cleanly with a message; a stale lock (dead PID or
+# unresponsive port) is reclaimed.
 _SINGLETON_LOCK_HELD = False
 _SINGLETON_LOCK_PATH = None
 

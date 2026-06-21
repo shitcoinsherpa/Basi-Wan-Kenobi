@@ -7,10 +7,6 @@ that targets the structural ceilings the current ("v1") kernel hits. Aim to
 ship a kernel that is **measurably faster** than v1 on Wan production M values
 (M ∈ {7808, 18000, 32400, 75600}) at bit-identical output quality.
 
-This is a **multi-session** project. Phases below define checkpoints; each
-session continues from the prior phase's exit state. Progress is tracked in
-`memory/marlin_v2_progress_<date>.md` memos.
-
 ## Why a v2 — the structural ceilings v1 hits
 
 ### Hard ceiling #1: register exhaustion at BLOCK_M=128
@@ -25,7 +21,7 @@ occupancy below 2 CTAs/SM. v1 has zero slack.
 
 ### Hard ceiling #2: warp-spec is architecturally net-negative at 4+4
 
-Measured across 4 variants (Phase 3 step C: FFFg/h/i/j, 2026-06-05/06):
+Measured across 4 warp-spec variants:
 4-warp consumer × 2× MMA work serially vs 8-warp baseline parallel MMA
 fundamentally halves throughput. The 4+4 split shape doesn't fit this kernel.
 
@@ -41,7 +37,7 @@ cascade into MORE spilling (measured: 80 → 192 byte stack frame, +12% wall).
 ### Hard ceiling #4: per-token modulation kernel attempts hit diffusion's
 bf16-rounding sensitivity
 
-A Triton fused per-token LN+modulation kernel (FFFw, 2026-06-06) is numerically
+A Triton fused per-token LN+modulation kernel is numerically
 more precise than the eager 3-bf16-quantization path but produces -0.0115
 composite Q regression. The diffusion model has adapted to the eager
 rounding pattern. Anything outside that rounding sequence drifts noise
@@ -107,54 +103,20 @@ v1 has bank conflicts on the A read path (8 threads of a warp read the same
 SMEM bank simultaneously, causing replays). v2 swizzles SMEM layout so that
 consecutive lanes of an mma fragment hit DIFFERENT banks.
 
-## Phases
+## Status
 
-### Phase A — Foundation (this session)
-
-- [x] Create `tools/marlin_v2/` directory structure
-- [x] Write this design doc
-- [ ] Write build system (PyTorch extension entrypoint)
-- [ ] Write kernel skeleton with namespace and stub launcher
-- [ ] Write correctness test harness (golden reference = dequant + F.linear)
-- [ ] Successfully build the stub kernel (compiles but does nothing useful)
-
-### Phase B — Core kernel (sessions 2-N)
-
-- [ ] Implement the 6+2 warp-spec architecture
-- [ ] Implement fused dequant → ldmatrix.x4 SMEM
-- [ ] Implement multi-stage cp.async pipeline with async barriers
-- [ ] Implement Q4_K dequant + mma fp32-acc path
-- [ ] Implement Q6_K dequant + mma fp32-acc path
-- [ ] Pass correctness test against golden reference at small shapes (M=256, 4096)
-
-### Phase C — Scale up + optimize (sessions N+)
-
-- [ ] Pass correctness at M=7808 (the v1 calibration shape)
-- [ ] Pass correctness at M=18000 (p720_17f)
-- [ ] Profile via nsight compute, identify bottleneck
-- [ ] Eliminate bank conflicts in A and B SMEM accesses
-- [ ] Implement BLOCK_M ∈ {64, 96, 128, 192} dispatch for M tail handling
-- [ ] L2 hint tuning
-- [ ] maxrregcount sweep on the new kernel
-
-### Phase D — Integration (SHIPPED 2026-06-06)
-
-- [x] Drop-in API match with current `marlin_q4k_q6k_gemm`
-- [x] Integration test: bit-identical output via v1 and v2 (Phase C correctness gate)
-- [x] Wall A/B at production M values (microbench Q4_K 0.76×, Q6_K 0.92×)
-- [x] Wire `BASIWAN_V2=1` gate (in `tools/gguf_vendor/q4_marlin/__init__.py:250`)
-- [x] 3-prompt × 2-shape end-to-end test: -5.3% mean wall, bit-identical CLIP-T
-- [x] Ship: `BASIWAN_V2=1` in `_env.sh` (opt-in default-on for sm_89)
-
-See `memory/marlin_v2_stages_1_huge_win_2026-06-06.md` for the corrected
-end-to-end measurement and `CURRENT_BEST_2026-06-06.md` for reference
-benchmarks.
+Shipped, gated behind `BASIWAN_V2=1` (opt-in default-on for sm_89) in
+`tools/gguf_vendor/q4_marlin/__init__.py`. The v2 kernel is a drop-in API match
+for `marlin_q4k_q6k_gemm`, verified **bit-identical to v1** against the golden
+reference (dequant + `F.linear` at fp32). Measured end-to-end across 3 prompts ×
+2 shapes: **-5.3% mean wall at bit-identical CLIP-T** (microbench Q4_K 0.76×,
+Q6_K 0.92× of v1).
 
 ## Reference materials
 
 - v1 kernel: `tools/gguf_vendor/q4_marlin/q4k_q6k_marlin.cu`
-- vllm MMQ kernel (reference for tensor-core Q4_K patterns):
-  `~/.local/lib/python3.10/site-packages/vllm/_C/lib_ggml_mul_mat_a8.so`
+- vllm MMQ kernel (reference for tensor-core Q4_K patterns; the installed vllm
+  package's `_C` ggml MMQ ops)
 - Original CUTLASS warp specialization examples:
   flash-attention/csrc/cutlass/examples/48_hopper_warp_specialized_gemm/
 - Cutlass arch barrier docs:

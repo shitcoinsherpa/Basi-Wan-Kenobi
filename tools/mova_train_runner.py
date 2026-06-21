@@ -26,7 +26,11 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "garbage_collection_threshold:0
 # segments: it pins growable segments empty_cache can't release -> desktop starved. See mova-m2 memo.
 os.environ.pop("ACCELERATE_USE_DEEPSPEED", None); os.environ.pop("ACCELERATE_USE_FSDP", None)
 
-MOVA = Path(os.environ.get("MOVA_REPO", str(Path.home() / "MOVA")))
+_BASI_ROOT = Path(__file__).resolve().parent.parent
+# The vendored OpenMOSS/MOVA clone (install_mova.js clones it to ext/mova); holds the training
+# config + scripts. Override with MOVA_REPO for a dev checkout. NO home/dev-box path -- resolves
+# on any install.
+MOVA = Path(os.environ.get("MOVA_REPO", str(_BASI_ROOT / "ext" / "mova")))
 # Portable: MOVA-360p weights under BASIWAN_CKPT_DIR (default <repo>/checkpoints), env-overridable.
 # No dev-box path -- resolves on any install once the weights are present.
 CKPT = os.environ.get("MOVA_CKPT", str(
@@ -126,13 +130,26 @@ def cached_training_step(model, video_latents, y, audio_latents, caption, global
     return {"loss": vloss + aloss, "video_loss": vloss, "audio_loss": aloss}
 
 
+# MODULE-LEVEL (not nested in main): on Windows, DataLoader workers use the 'spawn' start method,
+# which PICKLES the dataset + collate_fn. A class/lambda defined inside main() is a local object and
+# can't be pickled -> "Can't get local object 'main.<locals>._CachedLatents'". Defining them at module
+# scope makes the latent-cache DataLoader work with num_workers>0 on Windows (Linux 'fork' didn't care).
+class _CachedLatents(torch.utils.data.Dataset):
+    def __init__(self, paths): self.paths = paths
+    def __len__(self): return len(self.paths)
+    def __getitem__(self, i): return torch.load(self.paths[i], map_location="cpu")
+
+
+def _take_first(b): return b[0]   # collate for batch_size=1 (picklable; a lambda is not, on spawn)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True); ap.add_argument("--output", required=True)
     ap.add_argument("--steps", type=int, default=2000); ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--height", type=int, default=240); ap.add_argument("--width", type=int, default=320)
     ap.add_argument("--frames", type=int, default=81); ap.add_argument("--rank", type=int, default=16)
-    # v3 style-push levers (2026-06-18, research-backed). Default OFF = unchanged v1/v2 behavior.
+    # v3 style-push levers. Default OFF = unchanged v1/v2 behavior.
     ap.add_argument("--alpha", type=int, default=0, help="LoRA alpha (0 -> == rank, the v1/v2 default). "
                     "Style convention is alpha=rank/2 (e.g. rank32/alpha16) for smoother transfer.")
     ap.add_argument("--freeze-audio", action="store_true", help="skip LoRA on audio_dit (frozen-encoder "
@@ -261,24 +278,45 @@ def main():
         log(f"latent cache ready ({len(LCACHE_PATHS)} clips, {n_enc} new); evicted video_vae+audio_vae; "
             f"GPU free={vram_free()[0]:.1f}GB")
 
-        class _CachedLatents(torch.utils.data.Dataset):
-            def __init__(self, paths): self.paths = paths
-            def __len__(self): return len(self.paths)
-            def __getitem__(self, i): return torch.load(self.paths[i], map_location="cpu")
         dl = DataLoader(_CachedLatents(LCACHE_PATHS), batch_size=1, shuffle=True, num_workers=2,
-                        pin_memory=True, drop_last=True, collate_fn=lambda b: b[0])
+                        pin_memory=True, drop_last=True, collate_fn=_take_first)
 
-    # dump a real ref frame (a dataset clip's first frame) to disk for the SEPARATE sampler process
+    # Dump an IN-STYLE reference frame for the SEPARATE sampler process. MOVA is I2V: this frame
+    # is the visual anchor that carries the trained style at inference (the prompt drives content).
+    # ds[0]'s first frame is a TRAP -- many shows open on a fade/title card (Moral Orel's is solid
+    # gray), and a flat-gray ref loses the style -> photoreal output. So
+    # scan clips and pick the most content-rich frame by pixel variance: prefer a high-variance
+    # FIRST frame (matches how the model was trained -- first-frame conditioning); if all first
+    # frames are near-flat, fall back to a MID frame of the most varied clip. ref.png also doubles
+    # as the per-LoRA default ref the app/list_mova_loras surfaces (basi/mova_infer.mova_lora_ref).
     ref_png = out / "ref.png"
     if do_sample:
         from PIL import Image
-        ff = ds[0]["first_frame"]
-        arr = (((ff.float() + 1) / 2).clamp(0, 1) * 255).byte().permute(1, 2, 0).cpu().numpy()
-        Image.fromarray(arr).save(str(ref_png))
-        log(f"ref frame for sampling -> {ref_png}")
+        def _std(t): return float(t.float().std())                       # [-1,1] frame; gray -> ~0
+        def _save(t):
+            arr = (((t.float() + 1) / 2).clamp(0, 1) * 255).byte().permute(1, 2, 0).cpu().numpy()
+            Image.fromarray(arr).save(str(ref_png))
+        N = min(len(ds), 48)
+        best_ff, best_std, best_item = ds[0]["first_frame"], -1.0, None
+        for idx in range(N):
+            it = ds[idx]
+            s = _std(it["first_frame"])
+            if s > best_std:
+                best_std, best_ff, best_item = s, it["first_frame"], it
+            if s > 0.15:                                                  # clearly content-rich -> stop
+                break
+        if best_std < 0.05 and best_item is not None and "video" in best_item:
+            # all scanned first-frames are near-flat (fades/title cards) -> use a mid frame instead
+            vid = best_item["video"]                                      # (C, T, H, W)
+            mid = vid[:, vid.shape[1] // 2] if vid.dim() == 4 else best_ff
+            if _std(mid) > best_std:
+                best_ff = mid
+                log(f"ref: first-frames flat (max std {best_std:.3f}); using a mid clip frame")
+        _save(best_ff)
+        log(f"ref frame for sampling -> {ref_png} (std {_std(best_ff):.3f}, scanned {N} clips)")
 
     # ---- MOVA-NATIVE LoRA: inject per-tower on bf16 FIRST (correct dtype), then NF4 the bases ----
-    # v3 style-push (2026-06-18): --freeze-audio drops audio_dit from the tower list (audio already
+    # v3 style-push: --freeze-audio drops audio_dit from the tower list (audio already
     # solved + overtrains; the bridge carries AV-sync so lip-sync survives a frozen audio tower).
     # --lora-ffn extends targets to the video DiT FFN linears. --alpha decouples alpha from rank.
     alpha = float(args.alpha) if args.alpha else float(args.rank)
@@ -335,7 +373,7 @@ def main():
         # Overwrite with the real int rank so the LoRA actually loads in shipped inference.
         # Record the BASE precision: an NF4-trained LoRA learned deltas relative to the 4-bit base,
         # so the sampler MUST emulate that base (quant->dequant) or the style is lost (measured
-        # 2026-06-17: bf16-base inference vs NF4-emulated differ ~57/255, style only transfers on the
+        # bf16-base inference vs NF4-emulated differ ~57/255, style only transfers on the
         # matched base). mova_sample.py reads this to auto-enable --nf4-base.
         torch.save({"rank": int(args.rank), "alpha": float(args.rank),
                     "target_modules": ["q", "k", "v", "o"], "base": str(args.base)},
@@ -356,7 +394,7 @@ def main():
             if m is not None: m.to(devnm)
         # synchronize so the CPU<->GPU transfers + frees actually complete before we measure/resume;
         # without it the resumed training step races a half-freed allocator (fragmentation OOM at the
-        # sample->resume boundary, 2026-06-16). Pairs with max_split_size_mb in the launch env.
+        # sample->resume boundary,). Pairs with max_split_size_mb in the launch env.
         gc.collect(); torch.cuda.empty_cache(); torch.cuda.synchronize()
     def sample_sep(tag, lora_dir):
         if not do_sample: return

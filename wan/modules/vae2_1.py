@@ -1,5 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN K3N0B1: GGUF
+# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN KENOBI: GGUF
 # quantized path, block-swap offload, persistent worker, I2V graft, tiled
 # VAE, profiling. See THIRD_PARTY_LICENSES.md.
 import logging
@@ -53,7 +53,7 @@ class RMS_norm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.
 
     def forward(self, x):
-        # [Faster-Wan2.2 P6.F3] Cast gamma/bias to x.dtype — see vae2_2.py for rationale.
+        # Cast gamma/bias to x.dtype — see vae2_2.py for rationale.
         gamma = self.gamma.to(x.dtype) if isinstance(self.gamma, torch.Tensor) else self.gamma
         bias = self.bias.to(x.dtype) if isinstance(self.bias, torch.Tensor) else self.bias
         return F.normalize(
@@ -65,7 +65,7 @@ class Upsample(nn.Upsample):
 
     def forward(self, x):
         """
-        [Faster-Wan2.2 P6.F2] PyTorch >=2.1 supports BF16 native nearest/nearest-exact;
+        PyTorch >=2.1 supports BF16 native nearest/nearest-exact;
         drop the FP32 round-trip (saves ~470 MB allocator traffic per call at the
         highest-resolution stage). Fallback for old PyTorch.
         """
@@ -514,7 +514,7 @@ class WanVAE_(nn.Module):
         self._decoder_temporal_scale = 2**sum(self.temperal_upsample)
         self._decoder_spatial_scale = 2**max(0, len(dim_mult) - 1)
         self._decode_tile_area_threshold = 2048
-        # [S9 2026-06-13] Encode-side tiling backstop in PIXEL area. Encode tiling
+        # Encode-side tiling backstop in PIXEL area. Encode tiling
         # is primarily env-gated (BASIWAN_VAE_TILING=1) so it never surprises the
         # i2v/vace encode paths; this auto-threshold only kicks in above ~720p.
         self._encode_tile_area_threshold = 1280 * 720
@@ -554,7 +554,7 @@ class WanVAE_(nn.Module):
         return out
 
     def _encode_tiled(self, x, tile_h=256, tile_w=256, overlap=32):
-        """[S9] Spatial tiled ENCODE — mirror of _decode_tiled, in pixel->latent.
+        """Spatial tiled ENCODE — mirror of _decode_tiled, in pixel->latent.
 
         Caps the encode peak (the 14.75GB hog at 480x832: 73 motion frames + ref
         encoded full-frame) by running the encoder on spatial PIXEL tiles and
@@ -630,7 +630,7 @@ class WanVAE_(nn.Module):
     def _decode_full(self, z):
         iter_ = z.shape[2]
         x = self.conv2(z)
-        # [Faster-Wan2.2 P6.F5] Keep decode accumulation linear-time.
+        # Keep decode accumulation linear-time.
         outs = []
         for i in range(iter_):
             self._conv_idx = [0]
@@ -755,7 +755,7 @@ class WanVAE_(nn.Module):
             device=x.device,
             dtype=acc_dtype,
         )
-        # [I-2.3 Fix A — 2026-06-03] Cache pre-warm. Without this, every spatial
+        # Cache pre-warm. Without this, every spatial
         # tile processes frame 0 with feat_cache=None then frames 1+ with
         # accumulated cache history. CausalConv3d behaves differently between
         # "first call (cache=None, no temporal pad)" and "later calls (cache
@@ -764,7 +764,7 @@ class WanVAE_(nn.Module):
         # Pre-warm cache by running one global frame-0 decode at quarter
         # resolution (bounds peak VRAM), then use the warm state as initial
         # cache for every spatial tile.
-        # [2026-06-04 v2] Default kept at "0" — Fix A pre-warm CRASHES at the
+        # Default kept at "0" — Fix A pre-warm CRASHES at the
         # tile loop (NOT inside the try block). The try/except wraps the
         # PRE-WARM decoder call which completes successfully and populates
         # self._feat_map with H=45 entries (quarter-res). Then the tile loop
@@ -871,7 +871,7 @@ class WanVAE_(nn.Module):
                 1, self.z_dim, 1, 1, 1)
         else:
             z = z / scale[1] + scale[0]
-        # [2026-06-04 drift-bisect] BASIWAN_FORCE_FULL_VAE=1 overrides the
+        # BASIWAN_FORCE_FULL_VAE=1 overrides the
         # tile threshold and forces a single full-resolution decode. Diagnostic
         # for the today-vs-ship composite Q drift: both Marlin and F.linear
         # paths lose ~0.10 on imaging_quality, suggesting tiled-VAE is the

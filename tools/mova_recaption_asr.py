@@ -1,5 +1,5 @@
 """Re-caption a MOVA A/V dataset with ASR dialogue -- the #1 fix for intelligible generated speech
-(MOVA is conditioned on the verbatim spoken words; measured 2026-06-17: dialogue-in-prompt -> CER
+(MOVA is conditioned on the verbatim spoken words; measured: dialogue-in-prompt -> CER
 0.083, generic 'he speaks' -> word-salad). For each clip, Whisper-transcribe the audio; if it holds
 intelligible English speech, append the line in MOVA's format -- He says, in English, "...". Clips
 without clear speech (music/SFX/silence) keep their caption. Idempotent + reversible: the clean

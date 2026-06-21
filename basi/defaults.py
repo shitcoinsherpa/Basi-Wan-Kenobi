@@ -1,8 +1,8 @@
 """basi/defaults.py -- the SINGLE SOURCE OF TRUTH for BASIWAN's user-facing default
-VALUES and the one validated recipe that was previously hardcoded in app.py.
+VALUES and the one validated restyle recipe.
 
 Why this exists: the UI defaults (frame counts, steps, guidance, strengths, epochs)
-were scattered as 20+ magic `value=` literals across app.py, free to silently drift
+otherwise scatter as 20+ magic `value=` literals across app.py, free to silently drift
 from the recipes we actually measured. This module collects them so a default has ONE
 home with its provenance, and the gradio sliders read from here.
 
@@ -16,11 +16,10 @@ ASCII only.
 """
 
 # --- Restyle (SDEdit) quality recipe -------------------------------------------------
-# Measured A/B 2026-06-11 (restyle_steps_ab): "s8_d6_L0.7" won -- 8 steps, denoise 0.6,
-# Lightning REDUCED to 0.7 -> style_sim 0.812 + tightest structure, vs the old 4-step /
-# L1.0 corner-cut at 0.750. Reducing Lightning lets the high-noise expert (global style)
-# impose the look without distill dilution. Applies ONLY on the restyle path; plain T2V
-# keeps Lightning 1.0. Was hardcoded in app.py (`_light_s = 0.7`, denoise slider 0.6).
+# Restyle: 8 steps, denoise 0.6, Lightning reduced to 0.7 -> style_sim 0.812 + tightest
+# structure (vs 4-step / L1.0 at 0.750). Reducing Lightning lets the high-noise expert
+# (global style) impose the look without distill dilution. Applies ONLY on the restyle
+# path; plain T2V keeps Lightning 1.0.
 RESTYLE_SDEDIT_RECIPE = {
     "steps": 8,
     "denoise": 0.6,

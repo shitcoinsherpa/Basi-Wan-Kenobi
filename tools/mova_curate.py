@@ -1,6 +1,6 @@
 """MOVA A/V dataset curation CLI -- audit / apply, reversible. The "correct for all users"
 curation pass over a built dataset dir (.mp4 + .txt pairs), using basi.mova_data's research-backed
-(deep-research 2026-06-16) flag-not-delete primitives.
+ flag-not-delete primitives.
 
   audit (default): analyze every clip, write _curation_report.json, print what WOULD be dropped.
                    Read-only -- touches nothing on disk except the report.

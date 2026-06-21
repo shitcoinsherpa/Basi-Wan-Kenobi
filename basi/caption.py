@@ -1,19 +1,17 @@
 """Auto-captioning for Wan2.2 LoRA datasets.
 
-Tier-aware model selection (research dated 2026-05, supersedes Flux-Gym's Florence-2):
-  - 24G+  Qwen/Qwen3-VL-8B-Instruct          — Oct-2025 release, 256K ctx, native bilingual
+Tier-aware model selection:
+  - 24G+  Qwen/Qwen3-VL-8B-Instruct          — 256K ctx, native bilingual
   - 16G   Qwen/Qwen2.5-VL-7B-Instruct-AWQ    — INT4 weight-quant, fits in <10GB
   - 12G   Qwen/Qwen3-VL-4B-Instruct          — smaller dense, low-VRAM tier
 
-Requires transformers>=4.57 for Qwen3-VL. musubi-tuner's pin to ==4.56.1 was a stale
-lower-bound (research 2026-05-28): Qwen3ForCausalLM landed in transformers 4.51 and
-4.56→4.57 has zero breaking changes affecting musubi's API surface. The pin was
-loosened to >=4.57,<5 in ext/musubi-tuner/pyproject.toml.
+Requires transformers>=4.57 for Qwen3-VL (pinned >=4.57,<5 in
+ext/musubi-tuner/pyproject.toml).
 
 Tarsier2-Recap-7B (omni-research) is video-description-specialized and beats GPT-4o
 on DREAM-1K F1 — opt-in via model_id="omni-research/Tarsier2-Recap-7B".
 
-Loaded on-demand, unloaded after batch (Flux-Gym pattern).
+Loaded on-demand, unloaded after batch.
 """
 from __future__ import annotations
 
@@ -32,13 +30,11 @@ MODEL_TIERS = {
 DEFAULT_MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
 
 DEFAULT_PROMPT_TEMPLATE = (
-    # [2026-06-09] Tightened from 100-200 → 60-100 words to match Wan's own
-    # prompt_extend.py target range (80-100 words). UMT5-XXL parses syntax,
-    # so we ask for natural language sentences (NOT booru tags) and require
-    # the caption to start with the subject — the trigger word (if any) is
-    # prepended programmatically by the gym after captioning, so the VLM
-    # doesn't need to invent it. See
-    # memory/wan22_lora_training_brief_2026-06-09.md.
+    # Caption 60-100 words, Wan2.2's prompt_extend.py target range. UMT5-XXL
+    # parses syntax, so we ask for natural language sentences (NOT booru tags)
+    # and require the caption to start with the subject — the trigger word (if
+    # any) is prepended programmatically by the gym after captioning, so the VLM
+    # doesn't need to invent it.
     "Describe this video clip in 60-100 words of natural language. "
     "Include: the main subject's appearance and clothing, the specific "
     "action or motion happening, the background setting, the camera angle "
@@ -48,14 +44,11 @@ DEFAULT_PROMPT_TEMPLATE = (
     "like 'this video shows' — describe directly."
 )
 
-# [2026-06-10] STYLE-LoRA variant: content-only captions. With a dedicated
-# trigger word, describing the constant style in every caption splits the
-# signal between the trigger and the style words ("claymation, stop-motion"),
-# weakening trigger binding and worsening bleed. Consensus prescription
-# (musubi #182 constant-attribute rule applied to style; civitai 8487);
-# no published video A/B — Flux image diaries (civitai 6792/7203) show
-# style-in-caption also "works" but binds to the words instead of the
-# trigger. We chose a trigger, so captions stay content-only.
+# STYLE-LoRA variant: content-only captions, one subject per LoRA. With a
+# dedicated trigger word, describing the constant style in every caption splits
+# the signal between the trigger and the style words ("claymation, stop-motion"),
+# weakening trigger binding and worsening bleed. Mixed subjects degrade coherence,
+# so captions stay content-only and the trigger owns the style.
 STYLE_PROMPT_TEMPLATE = (
     "Describe this video clip in 60-100 words of natural language. "
     "Include: the main subject's appearance and clothing, the specific "
@@ -69,12 +62,13 @@ STYLE_PROMPT_TEMPLATE = (
     "shows' — describe directly."
 )
 
-# [2026-06-15] MOVA / joint-AUDIO-VIDEO style variant. MOVA's text conditions BOTH the video
+# MOVA / joint-AUDIO-VIDEO style variant. MOVA's text conditions BOTH the video
 # AND audio towers (via the cross-attention bridge), so unlike the video-only STYLE_PROMPT
 # (which says "Do not describe audio"), here we ADD one short clause for the salient TRANSIENT
-# diegetic sound event -- that variable signal helps the bridge bind audio<->video. But the
+# diegetic sound event -- that variable signal helps the bridge bind audio<->video. The
 # CONSTANT visual AND audio style stay owned by the trigger (never described), and audio is held
-# to ONE clause so it doesn't split the trigger signal. See memory/mova_av_dataset_gym_spec.
+# to ONE clause so it doesn't split the trigger signal. Dialogue is added via Whisper
+# (asr_dialogue_recaption) where CER 0.0-0.06 holds; generic "he speaks" alone yields word-salad.
 MOVA_AV_PROMPT_TEMPLATE = (
     "Describe this video clip in 50-90 words of natural language. "
     "Include: the main subject's appearance and clothing, the specific action or motion, the "
@@ -150,10 +144,18 @@ _MOVA_REWRITE_SYS = (
     "2. Then one concise visual sentence: the subject, what they do, and the shot/setting "
     "(e.g. medium shot, kitchen interior), ENDING WITH A PERIOD. Do NOT add art-style "
     "adjectives — the trigger carries the trained style.\n"
-    '3. If the subject speaks, append exactly: He says, in English, "<the spoken words>". '
-    "(Use She/They as appropriate.) Copy any words the user already put in quotes VERBATIM — "
-    "never paraphrase, translate, or alter them. If the user gave no speech, omit this clause.\n"
-    "4. Output ONLY the final prompt on one line — no preamble, no surrounding quotes, no notes."
+    "3. SPEAKER BINDING (critical for lip-sync — MOVA has no speaker selector; the spoken line "
+    "attaches to whichever on-screen subject the prose names as speaking). If there are MULTIPLE "
+    "subjects, NAME the one who speaks and have ONLY them speak, and describe the other(s) as "
+    "silent/listening (e.g. '... the dragon listens silently'). Put the speaker front-and-center "
+    "in the visual sentence. If the subject speaks, append exactly: The <speaker> says, in "
+    'English, "<the spoken words>". (Use the named subject, e.g. "The boy says".)\n'
+    "4. SPOKEN WORDS: copy the user's quoted words VERBATIM in quotes — never paraphrase, "
+    "translate, respell, or alter them (MOVA conditions speech on the literal words). Do NOT "
+    "phonetically respell anything: auto-respelling breaks words that were fine (measured net-"
+    "negative). If a user wants a specific pronunciation they can spell it themselves. If no "
+    "speech, omit this clause.\n"
+    "5. Output ONLY the final prompt on one line — no preamble, no surrounding quotes, no notes."
 )
 
 
@@ -219,12 +221,11 @@ def caption_video(model, processor, video_path: str, trigger_word: str | None = 
     return caption
 
 
-# [2026-06-09 #372] Continuation-prompt system prompt, adapted from the
-# vendored wan/utils/system_prompt.py I2V_A14B_EN_SYS_PROMPT style — the
-# style the UMT5/Wan2.2 I2V training pipeline was calibrated against.
-# DELIBERATELY the opposite of DEFAULT_PROMPT_TEMPLATE above: I2V wants
-# short motion-first prompts with static scene description stripped,
-# because the conditioning frame already carries the appearance.
+# Continuation-prompt system prompt: the UMT5/Wan2.2 I2V style — a
+# continuation-prompt LLM that steers frame diversity. DELIBERATELY the opposite
+# of DEFAULT_PROMPT_TEMPLATE above: I2V wants short motion-first prompts with
+# static scene description stripped, because the conditioning frame already
+# carries the appearance.
 CONTINUATION_SYS_PROMPT = (
     "You are an expert at writing continuation prompts for an "
     "image-to-video model. You are given the last frame of the previous "
@@ -295,7 +296,7 @@ def suggest_continuation_prompt(last_frame_png: str, previous_prompt: str,
         print("[continue] VLM unloaded")
 
 
-# [2026-06-10] Frame-picking variant: the VLM sees ALL candidate tail
+# Frame-picking variant: the VLM sees ALL candidate tail
 # frames and both chooses the best continuation point and writes the
 # prompt for it — one model load, both jobs. The Laplacian-sharpness
 # ranking is a proxy; the VLM can also judge eyes-mid-blink, motion
@@ -377,6 +378,123 @@ def suggest_continuation_with_pick(tail_pngs: list[str], previous_prompt: str,
     return 0, raw, ""
 
 
+# --- MOVA T2AV style assets: VLM-picked style reference frame + style descriptor --------------
+# For SDXL+IP-Adapter style transfer (the per-prompt MOVA reference), the STYLE source must be a
+# clean CLOSE character shot, and the SDXL prompt needs a short STYLE descriptor. Signal heuristics
+# (Laplacian/saturation) misfire on text/title cards and wide shots, so we use the VLM (already
+# loaded for captioning) to choose semantically. One model load does both jobs.
+STYLE_PICK_SYS_PROMPT = (
+    "You are selecting a STYLE-REFERENCE frame for image style-transfer from an animated show. "
+    "You are given several candidate frames (numbered in the order shown). Choose the SINGLE best "
+    "frame to represent the show's VISUAL STYLE: STRONGLY prefer a CLOSE shot of ONE character with "
+    "the face and surface material clearly visible, sharp and well-lit. AVOID wide establishing "
+    "shots, any frame with on-screen TEXT / credits / title cards / logos, blurry or transitional "
+    "frames, and empty scenery. Also identify the ANIMATION MEDIUM precisely by its surface cues, "
+    "choosing the closest: CLAYMATION/stop-motion (clay or plasticine figures, visible fingerprints/"
+    "sculpt seams, soft 3D-lit physical models) -> say 'claymation, stop-motion clay figures'; "
+    "PUPPET/felt stop-motion -> 'stop-motion felt puppets'; 2D HAND-DRAWN/cel (flat ink outlines, "
+    "flat color fills) -> '2D cel animation, flat colors'; 3D CGI (smooth rendered surfaces) -> "
+    "'3D CGI animation'. Look at TEXTURE: clay figures are matte, hand-sculpted and 3-dimensional, "
+    "NOT flat-shaded drawings. Give a 3-5 word style/medium phrase; do NOT name the show or "
+    'characters. Respond with ONLY a JSON object: '
+    '{"frame": <number of chosen frame>, "style": "<3-5 word medium+look>", "why": "<one short sentence>"}'
+)
+
+
+def pick_style_frame_and_tag_vlm(candidate_pngs: list) -> tuple:
+    """VLM picks the best STYLE-reference frame from candidates AND derives a 3-5 word style tag.
+    Returns (index_into_candidate_pngs, style_tag, why). Falls back to (0, '', '') if the JSON
+    contract is violated. One model load."""
+    import torch
+    model_id = MODEL_TIERS[12]
+    print(f"[style-pick] loading {model_id} for style-frame pick + tag…")
+    model, processor = _load_vlm(model_id)
+    try:
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": STYLE_PICK_SYS_PROMPT}]},
+            {"role": "user",
+             "content": ([{"type": "image", "image": p, "max_pixels": 448 * 448} for p in candidate_pngs]
+                         + [{"type": "text",
+                             "text": f"The {len(candidate_pngs)} candidate frames are attached in order (frame 1 first)."}])},
+        ]
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        from qwen_vl_utils import process_vision_info
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(text=[text], images=image_inputs, videos=video_inputs,
+                           padding=True, return_tensors="pt").to("cuda")
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=120)
+        raw = processor.batch_decode(out[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)[0].strip()
+    finally:
+        _unload(model)
+        print("[style-pick] VLM unloaded")
+    import json as _json, re as _re
+    m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+    if m:
+        try:
+            obj = _json.loads(m.group(0))
+            idx = max(0, min(int(obj.get("frame", 1)) - 1, len(candidate_pngs) - 1))
+            return idx, str(obj.get("style", "")).strip(), str(obj.get("why", "")).strip()
+        except (ValueError, KeyError, _json.JSONDecodeError):
+            pass
+    return 0, "", ""
+
+
+def derive_mova_style_assets(clip_paths: list, workspace_dir, n_candidates: int = 12) -> tuple:
+    """Write the MOVA T2AV style assets into a workspace at train time: <ws>/style.png (the VLM-
+    chosen close-up style frame) + <ws>/style_tag.txt (the 3-5 word style descriptor). Samples one
+    mid-frame from up to n_candidates clips, lets the VLM pick the best + name the style. Returns
+    (style_png_path|None, style_tag|''). Best-effort: on any failure returns (None,'') and the
+    reference-maker falls back to ref.png. Reuses the gym's captioner VLM (one load)."""
+    import tempfile
+    from pathlib import Path as _P
+    try:
+        import av
+        from PIL import Image
+        import numpy as np
+    except Exception:
+        return None, ""
+    ws = _P(workspace_dir); ws.mkdir(parents=True, exist_ok=True)
+    tmp = _P(tempfile.mkdtemp(prefix="stylecand_"))
+    cands = []
+    for cp in [_P(c) for c in clip_paths][:n_candidates * 3]:   # scan extra; keep n non-flat
+        if len(cands) >= n_candidates:
+            break
+        try:
+            with av.open(str(cp)) as c:
+                s = c.streams.video[0]
+                total = s.frames or 0
+                target = (total // 2) if total else 12
+                idx = 0
+                for f in c.decode(s):
+                    if idx >= target:
+                        rgb = f.to_ndarray(format="rgb24")
+                        if float(rgb.mean(axis=2).std()) >= 18.0:   # skip flat/fade
+                            out = tmp / f"cand_{len(cands):02d}.png"
+                            Image.fromarray(rgb).save(out)
+                            cands.append(str(out))
+                        break
+                    idx += 1
+        except Exception:
+            continue
+    if not cands:
+        return None, ""
+    try:
+        i, tag, _why = pick_style_frame_and_tag_vlm(cands)
+    except Exception:
+        i, tag = 0, ""
+    import shutil
+    style_png = ws / "style.png"
+    shutil.copy2(cands[max(0, min(i, len(cands) - 1))], style_png)
+    if tag:
+        (ws / "style_tag.txt").write_text(tag, encoding="utf-8")
+    try:
+        shutil.rmtree(tmp)
+    except Exception:
+        pass
+    return str(style_png), tag
+
+
 def caption_dataset(video_paths: Iterable[str], trigger_word: str | None = None,
                     output_dir: str | Path | None = None,
                     model_id: str | None = None,
@@ -430,8 +548,8 @@ def caption_dataset(video_paths: Iterable[str], trigger_word: str | None = None,
 def asr_dialogue_recaption(dataset_dir, model: str = "base", min_prob: float = 0.6,
                            min_words: int = 2, apply: bool = True, progress_cb=None) -> dict:
     """Append VERBATIM spoken dialogue to MOVA captions -- THE #1 fix for intelligible generated
-    speech. MOVA is text-conditioned on the literal spoken words (measured 2026-06-18: dialogue-in-
-    caption -> Whisper CER 0.0-0.06; generic 'he speaks' -> non-English word-salad). For each clip,
+    speech. MOVA is text-conditioned on the literal spoken words (dialogue-in-caption -> Whisper
+    CER 0.0-0.06; generic 'he speaks' -> non-English word-salad). For each clip,
     CPU-Whisper the audio; if it holds intelligible English speech, append -- He says, in English,
     "...". Music/SFX/silence clips keep their caption. Idempotent + reversible: the clean caption is
     backed up to <clip>.txt.orig once and every run rebuilds from it. Shared by the Gym UI and

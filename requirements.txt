@@ -1,4 +1,4 @@
-# BASI WAN K3N0B1 — Python deps (Pinokio install layer reads this).
+# BASI WAN KENOBI — Python deps (Pinokio install layer reads this).
 # Note: torch is installed separately by install.js to pick cu121 vs cu128
 # based on detected GPU. Don't pin torch here.
 gradio>=5.0

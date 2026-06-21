@@ -45,7 +45,7 @@ class BasiwanRunner:
                  ready_timeout_s: int = 1800):
         # ready_timeout_s=1800 (was 900): a fresh install's FIRST start
         # re-packs both 14B experts from GGUF and writes ~19 GB of pack
-        # cache — measured >900s on the user's machine 2026-06-09, which
+        # cache — measured, which
         # would have killed a healthy worker mid-warm. Cached starts are
         # minutes, not seconds, only on the first ever run.
         self._python = python
@@ -125,7 +125,7 @@ class BasiwanRunner:
         # Kill the worker before raising — without this, the timed-out
         # (but otherwise healthy) worker stays orphaned holding ~27 GB
         # host RAM, and the caller's retry spawns a SECOND one on top.
-        # Observed live 2026-06-09 when first-ever cold start exceeded
+        # Observed live when first-ever cold start exceeded
         # the old 900s budget mid low-noise pack.
         try:
             self._proc.kill()
@@ -218,13 +218,13 @@ class BasiwanRunner:
 
     def set_lora(self, lora_dir, strength: float = 1.0,
                  timeout: float = 60.0, runtime_scalable: bool = False) -> dict:
-        """[#391] Hot-swap the user-LoRA combo on the live worker. lora_dir
+        """Hot-swap the user-LoRA combo on the live worker. lora_dir
         is a directory holding {low,high}_noise_model.safetensors, or None to
         clear all LoRA. Returns the worker's lora_set event (cleared/low/high/
         wall_s). Modeled on ping(); 60 s timeout covers a load_file + attach
         (measured ~0.3 s, but a cold OS cache on the combo file can stall).
 
-        [#388] runtime_scalable=True marks the combo as USER-ONLY (no Lightning
+        runtime_scalable=True marks the combo as USER-ONLY (no Lightning
         entangled), so request-time lora_strength scales it exactly and the
         worker honors the slider instead of pinning to 1.0. Leave False for a
         Lightning+user combo (strength must be baked at build there)."""

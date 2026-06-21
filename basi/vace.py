@@ -1,10 +1,9 @@
-"""#388 VACE conditioning — build the 96-channel control latent that feeds
+"""VACE conditioning — build the 96-channel control latent that feeds
 vace_patch_embedding (Conv3d 96->5120). Source-verified against ali-vilab/VACE
-wan_vace.py (vace_encode_frames / vace_encode_masks / vace_latent) — see
-memory/vace_388_progress. The forward-pass integration lives in
-wan/modules/model.py (forward_vace + hint injection); this module owns only the
-pure-tensor conditioning construction so it can be unit-tested without the VAE
-or the model.
+wan_vace.py (vace_encode_frames / vace_encode_masks / vace_latent). The
+forward-pass integration lives in wan/modules/model.py (forward_vace + hint
+injection); this module owns only the pure-tensor conditioning construction so
+it can be unit-tested without the VAE or the model.
 
 96-channel layout (EXACT, verified):
     ch  0-15 : inactive = VAE.encode(frames * (1 - mask))   16ch latent
@@ -28,15 +27,14 @@ def latent_t(pixel_frames: int) -> int:
     return (pixel_frames + 3) // VAE_STRIDE[0]
 
 
-# [#388] VACE depth-control QUALITY-TIER recipe — VALIDATED 2026-06-12 (single
-# source of truth; the worker/app VACE path MUST pull these, never inherit the
-# Lightning/SDEdit fast defaults). At these settings the output geometry tracks
-# the control depth at 0.973 correlation (vs 0.512 with control OFF). The VACE
-# hint is a RESIDUAL added onto the denoising stream, so it needs real CFG +
-# full steps to bite; at the Lightning-4 / guide-1.5 fast regime the depth-lock
-# COLLAPSES to ~0 and the output looks uncontrolled (this cost a full debug
-# cycle — see memory/vace_388_progress_2026-06-11). Use SDEdit (#385
-# s8_d6_L0.7) for FAST restyle; VACE for the depth-locked QUALITY tier.
+# VACE depth-control QUALITY-TIER recipe — single source of truth; the
+# worker/app VACE path MUST pull these, never inherit the Lightning/SDEdit fast
+# defaults. At these settings the output geometry tracks the control depth at
+# 0.973 correlation (vs 0.512 with control OFF). The VACE hint is a RESIDUAL
+# added onto the denoising stream, so it needs real CFG + full steps to bite; at
+# the Lightning-4 / guide-1.5 fast regime the depth-lock COLLAPSES to ~0 and the
+# output looks uncontrolled. Use SDEdit (s8_d6_L0.7) for FAST restyle; VACE for
+# the depth-locked QUALITY tier.
 VACE_DEPTH_RECIPE = {
     "sampling_steps": 50,
     "guide_scale": 5.0,
@@ -101,7 +99,7 @@ def build_mask_channels(mask, latent_frames: int, latent_h: int, latent_w: int,
         Correct for DENSE masks (depth = all-ones; spatial inpaint spanning many
         frames). KEEP for the depth path (byte-identical).
       "vae_min" — causal VAE-group MIN-pool: latent 0 <- pixel 0; latent k <- min
-        over pixels [4(k-1)+1 .. 4k]. Needed for SPARSE keyframe anchors (#389):
+        over pixels [4(k-1)+1 .. 4k]. Needed for SPARSE keyframe anchors:
         nearest-exact samples only pixels ~{0,4,8,...} and silently DROPS a
         single-frame anchor sitting between them (it does upstream too — VACE was
         never trained on sparse RGB anchors). min-pool guarantees an anchor in any
@@ -143,7 +141,7 @@ def assemble_vace_latent(inactive_lat, reactive_lat, mask_64):
 
 
 def build_keyframe_guide_and_mask(anchors, positions, total_frames, height, width):
-    """[#389] Keyframe-anchored editing (Ray Modify parity). Build the VACE
+    """Keyframe-anchored editing (Ray Modify parity). Build the VACE
     (guide, mask) so the edited anchor frames are KEPT and the rest is generated
     to match — the edit propagates. anchors: list of (3,H,W) edited frames in
     [-1,1]; positions: their frame indices in [0,total_frames). Returns:
@@ -155,8 +153,8 @@ def build_keyframe_guide_and_mask(anchors, positions, total_frames, height, widt
     Feed through the SAME 96-ch path as depth control (split_inactive_reactive →
     VAE encode → assemble_vace_latent): inactive=VAE(anchors), reactive=VAE(grey),
     the 64 mask channels mark which frames to regenerate. Honest ceiling ~4-6
-    anchors/clip; anchors + a dense control video is a known Wan2GP bug (#428),
-    so v1 is anchors-ONLY (no depth)."""
+    anchors/clip; anchors + a dense control video is a known Wan2GP bug,
+    so this path is anchors-ONLY (no depth)."""
     import torch
     if len(anchors) != len(positions):
         raise ValueError(f"{len(anchors)} anchors but {len(positions)} positions")

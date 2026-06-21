@@ -14,8 +14,8 @@ So clips MUST be authored at a fixed CFR fps with embedded, synced, 48kHz mono, 
 normalized audio. Output is MOVA's native format: metadata.json + videos/*.mp4 (audio embedded).
 
 Defaults are research-backed (MOVA loader source + MMAudio / HunyuanVideo-Foley curation +
-A/V-sync literature) -- see memory/mova_av_dataset_gym_spec_2026-06-15.md. Shot-boundary
-detection + the clip plan are REUSED from basi/autosplit.py (one detector for both paths).
+A/V-sync literature). Shot-boundary detection + the clip plan are REUSED from
+basi/autosplit.py (one detector for both paths).
 
 Engine: the ffmpeg binary bundled by imageio-ffmpeg (same as autosplit).
 """
@@ -28,10 +28,10 @@ from pathlib import Path
 
 from basi.autosplit import _ffmpeg_exe, detect_scene_cuts, plan_clips
 # Canonical MOVA A/V caption prompt lives in basi/caption.py (the captioning home); aliased here
-# for callers of the dataset module. See MAV2.
+# for callers of the dataset module.
 from basi.caption import MOVA_AV_PROMPT_TEMPLATE as MOVA_STYLE_CAPTION_PROMPT  # noqa: F401
 
-# ---- MOVA A/V defaults (perfected; see the spec memo) -------------------------------------
+# ---- MOVA A/V defaults -------------------------------------
 DEFAULT_FPS = 24            # match the MOVA checkpoint; loader default video_fps=24
 DEFAULT_SR = 48000          # MOVA DAC sample rate
 DEFAULT_LUFS = -18.0        # EBU R128 integrated-loudness target (consistent dataset levels)
@@ -130,16 +130,16 @@ def audio_content_flags(clip_path: Path, sr: int = DEFAULT_SR,
 
 
 # ---- Curation: audio class / motion / dedup / training schedule ----------------------------
-# Research-backed (deep-research 2026-06-16 + implementation-specifics agent): dependency-light,
-# cross-platform, FLAG-not-delete. Every numeric threshold tagged "(calibrate)" is a starting
-# default (GUESS until measured on a real corpus, per that research) -- conservative so it FLAGS
-# rather than silently drops. All deps are imported defensively: a missing dep degrades to
-# "unavailable" and never crashes the dataset build (mirrors autosplit's flag philosophy).
+# Research-backed: dependency-light, cross-platform, FLAG-not-delete. Every numeric threshold
+# tagged "(calibrate)" is a starting default (GUESS until measured on a real corpus) --
+# conservative so it FLAGS rather than silently drops. All deps are imported defensively: a
+# missing dep degrades to "unavailable" and never crashes the dataset build (mirrors autosplit's
+# flag philosophy).
 
 def classify_audio_content(clip_path: Path, sr: int = 16000) -> dict:
     """Heuristic speech/music/SFX label for a clip's audio (librosa spectral features, no model
     download, no GPU). Returns {label, music_score, speech_score, hzcrr, harm_ratio, flatness,
-    available}. Discriminators (deep-research 2026-06-16):
+    available}. Discriminators:
       - HZCRR (high zero-crossing-rate ratio): speech alternates voiced/unvoiced -> HZCRR ~0.15;
         music is steady -> ~0.05. The ZCR *dynamics*, not the mean, separate speech from music.
       - HPSS harmonic ratio (librosa.effects.hpss): music = sustained harmonic content (high);
@@ -214,10 +214,78 @@ def clip_motion_score(clip_path: Path, max_frames: int = 48, downscale: int = 64
         return None
 
 
+def pick_style_frame(clip_paths: list, out_png, max_clips: int = 40,
+                     frames_per_clip: int = 3) -> str | None:
+    """Pick the most TEXTURE-RICH frame across the training clips and save it as the IP-Adapter
+    STYLE source (the Gym writes this as <workspace>/style.png at train time).
+
+    WHY: for SDXL+IP-Adapter style transfer, a close, high-detail frame transfers a niche style
+    (claymation) far better than a wide establishing shot. Texture/detail
+    (clay grain, facial modeling) correlates with sharpness, so we score each sampled frame by the
+    VARIANCE OF ITS LAPLACIAN (classic focus/detail measure) gated by enough overall contrast (skip
+    flat title/fade frames). The highest-scoring frame is typically a close character shot — the
+    ideal style anchor. Distinct from the I2V ref.png (which optimizes first-frame anchoring).
+
+    PyAV + numpy (same stack as clip_motion_score; no opencv). Returns the saved path or None."""
+    try:
+        import av
+        import numpy as np
+        from PIL import Image
+    except Exception:
+        return None
+    best_score = -1.0
+    best_rgb = None
+    clips = [Path(c) for c in clip_paths][:max_clips]
+    for cp in clips:
+        try:
+            with av.open(str(cp)) as c:
+                s = c.streams.video[0]
+                total = s.frames or 0
+                # sample frames spread across the clip, skipping the very first (often a title/fade)
+                want = set()
+                if total > 0:
+                    for k in range(1, frames_per_clip + 1):
+                        want.add(min(total - 1, int(total * k / (frames_per_clip + 1))))
+                idx = 0
+                grabbed = 0
+                for f in c.decode(s):
+                    take = (idx in want) if total > 0 else (idx % 10 == 5)
+                    if take:
+                        rgb = f.to_ndarray(format="rgb24").astype("float32")
+                        g = rgb.mean(axis=2)
+                        # Reject near-flat (title/fade) AND text-heavy/credits frames. Credits are
+                        # near-MONOCHROME (bright text on dark) -> low color saturation; real clay
+                        # scenes are colorful. Sharpness (Laplacian var) alone is fooled by letter
+                        # edges, so GATE on color saturation = max-min across RGB per pixel, mean.
+                        mx = rgb.max(axis=2); mn = rgb.min(axis=2)
+                        sat = float((mx - mn).mean())
+                        if float(g.std()) < 18.0 or sat < 28.0:   # flat OR low-color (text/credits)
+                            pass
+                        else:
+                            # Laplacian = 4*center - 4-neighbors (numpy slicing); var = detail/sharpness
+                            lap = (4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1]
+                                   - g[1:-1, :-2] - g[1:-1, 2:])
+                            # weight texture by colorfulness so a colorful clay close-up beats a
+                            # sharp-but-drab graphic; keeps the metric a STYLE proxy, not pure edges.
+                            score = float(lap.var()) * (sat / 64.0)
+                            if score > best_score:
+                                best_score, best_rgb = score, rgb.astype("uint8")
+                        grabbed += 1
+                        if grabbed >= frames_per_clip:
+                            break
+                    idx += 1
+        except Exception:
+            continue
+    if best_rgb is None:
+        return None
+    Image.fromarray(best_rgb).save(str(out_png))
+    return str(out_png)
+
+
 def frame_phashes(clip_path: Path, n: int = 5) -> list:
     """n evenly-spaced frame perceptual hashes (pHash, 64-bit via imagehash) for dedup. Returns []
     if imagehash/PyAV/PIL absent or decode fails. pHash chosen: its Hamming distances are normally
-    distributed -> a single threshold behaves predictably (deep-research 2026-06-16)."""
+    distributed -> a single threshold behaves predictably."""
     try:
         import av
         import imagehash
@@ -275,8 +343,8 @@ def plan_training_schedule(n_clips: int, target_steps: int = 2400, batch_size: i
                            target_per_epoch: int = 150) -> dict:
     """Pick (repeats, epochs) so total steps land near target_steps for ANY dataset size -- the
     'correct for all users' size fix. total_steps = n_clips * repeats * epochs / batch (the
-    kohya/musubi/diffusion-pipe formula, VERIFIED). Target ~2400 for video LoRA (musubi #182);
-    small sets need higher repeats, large sets repeats=1 (deep-research 2026-06-16). Returns
+    kohya/musubi/diffusion-pipe formula, VERIFIED). Target ~2400 for video LoRA;
+    small sets need higher repeats, large sets repeats=1. Returns
     {repeats, epochs, est_steps, per_epoch, note}."""
     n = max(1, int(n_clips))
     repeats = max(1, round(target_per_epoch / n)) if n < target_per_epoch else 1
@@ -344,9 +412,9 @@ def _episode_edges(clips: list[dict]) -> set[str]:
     """Paths of the FIRST and LAST clip of each source episode -- the positions where intro/title
     cards and end-credits live (true for ~any show). Episodes are grouped by the clip filename with
     its trailing _<index> stripped (build_mova_clips names clips '<source>_<NNN>.mp4'). Index order
-    is taken from that numeric suffix so it's chronological regardless of dict order. Found 2026-06-19
-    after an opening title shot ('MORAL OTEL' sign + theme music) leaked past the static/music/dedup
-    filters into training -- positional edge detection catches what content filters miss."""
+    is taken from that numeric suffix so it's chronological regardless of dict order. An opening
+    title shot (a title-card sign + theme music) can leak past the static/music/dedup filters --
+    positional edge detection catches what content filters miss."""
     groups: dict[str, list[tuple[int, str]]] = {}
     for c in clips:
         p = c["path"]

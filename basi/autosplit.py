@@ -1,7 +1,7 @@
 """Auto-split long videos into 2-5s single-shot training clips.
 
-The Wan2.2 LoRA dataset recipe (memory/wan22_lora_training_brief) wants
-20-50 clips of ~2-5s, each ONE continuous shot — a cut inside a clip
+The Wan2.2 LoRA dataset recipe wants 20-50 clips of ~2-5s, each ONE
+continuous shot — a cut inside a clip
 teaches the model to cut. This module turns "a few big videos" into that
 shape: ffmpeg scene-change detection finds shot boundaries, long shots are
 subsampled into evenly-spaced chunks (varied moments, not consecutive
@@ -9,10 +9,10 @@ frames), too-short shots are dropped with a reason, and every produced
 clip gets a sharpness FLAG (never an auto-delete — curation stays human).
 
 Engine: the ffmpeg binary bundled by imageio-ffmpeg. PySceneDetect was
-REJECTED (2026-06-10 research): its ContentDetector imports cv2
-unconditionally — even with the PyAV backend — so it drags in
-opencv-python (~200 MB) for marginal gain over ffmpeg's scene score on
-hard cuts. ffmpeg's known weakness (gradual fades/dissolves under the
+REJECTED: its ContentDetector imports cv2 unconditionally — even with the
+PyAV backend — so it drags in opencv-python (~200 MB) for marginal gain
+over ffmpeg's scene score on hard cuts. ffmpeg's known weakness
+(gradual fades/dissolves under the
 threshold) is acceptable for dataset prep; fades make poor training clips
 anyway.
 
@@ -36,10 +36,10 @@ VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 
 # Clip-shape constants from the training brief. Exposed as function args
 # for the UI but these defaults ARE the recipe.
-# [2026-06-10] 2.2 not 2.0: musubi's 24→16fps resampling turns a 2.000s
-# clip into 32 frames — one short of a 33-frame window — and it silently
-# caches ZERO items for that clip (verified in image_video_dataset.py;
-# exact boundary 2.042s at 24fps source). 2.2 adds safety margin.
+# 2.2 not 2.0: musubi's 24→16fps resampling turns a 2.000s clip into 32
+# frames — one short of a 33-frame window — and it silently caches ZERO
+# items for that clip (exact boundary 2.042s at 24fps source). 2.2 adds
+# safety margin.
 MIN_CLIP_S = 2.2
 MAX_CLIP_S = 5.0       # above this, subsample chunks instead
 TARGET_CHUNK_S = 3.5   # chunk length cut from long shots
@@ -50,8 +50,8 @@ DEFAULT_THRESHOLD = 0.4  # ffmpeg scene-score de facto default for hard cuts
 
 def _ffmpeg_exe() -> str:
     # Prefer the imageio-ffmpeg-bundled binary (what the gym ships), but fall back to a system
-    # ffmpeg on PATH so the dataset pipeline works in any env that has ffmpeg but not the wheel
-    # (robustness for all users; verified 2026-06-16). Errors clearly if neither exists.
+    # ffmpeg on PATH so the dataset pipeline works in any env that has ffmpeg but not the wheel.
+    # Errors clearly if neither exists.
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
@@ -96,14 +96,12 @@ def detect_scene_cuts(src: Path, threshold: float = DEFAULT_THRESHOLD) -> list[f
     with tempfile.TemporaryDirectory() as td:
         # The file= option lives INSIDE the filtergraph, where ':' is the
         # option separator — a Windows absolute path (C:\...) silently
-        # truncates the option and detection returns nothing (caught by
-        # the synthetic-cuts test 2026-06-10). Run with cwd=tempdir and a
-        # RELATIVE filename instead of fighting two levels of escaping.
-        # The backslash before the comma is FILTERGRAPH-level escaping
-        # (the graph parser splits filters on ',' without respecting
-        # parentheses) — required even with list-args/no shell. Verified
-        # the hard way 2026-06-10: unescaped form fails with
-        # "No such filter: '0.4)'".
+        # truncates the option and detection returns nothing. Run with
+        # cwd=tempdir and a RELATIVE filename instead of fighting two levels
+        # of escaping. The backslash before the comma is FILTERGRAPH-level
+        # escaping (the graph parser splits filters on ',' without respecting
+        # parentheses) — required even with list-args/no shell; the unescaped
+        # form fails with "No such filter: '0.4)'".
         cmd = [
             _ffmpeg_exe(), "-hide_banner", "-nostdin",
             "-i", str(src),

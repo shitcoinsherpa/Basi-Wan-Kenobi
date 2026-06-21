@@ -1,4 +1,4 @@
-"""#388 Depth-control extraction for VACE restyle. Runs Depth-Anything-V2-Small
+"""Depth-control extraction for VACE restyle. Runs Depth-Anything-V2-Small
 (Apache-2.0; the Large variant is CC-BY-NC — ship Small only) per frame and
 formats the result as the EXACT control-video tensor the VACE VAE expects.
 

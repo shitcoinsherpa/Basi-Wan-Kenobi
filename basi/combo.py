@@ -14,8 +14,7 @@ dotted `diffusion_model.<name>.lora_{down,up}.weight` / `.alpha` style so the
 runner's existing `_parse_lightning_lora` consumes them unchanged.
 
 This is the productized form of the offline build_combo_lora.py that produced
-the validated Moral Orel showcase (8/8 shapes, 2026-06-11). See
-memory/tier1_release_buildplans for the design + the bit-identical gate.
+the validated showcase (8/8 shapes), bit-identical to it.
 """
 from __future__ import annotations
 
@@ -164,11 +163,10 @@ def build_combo(lightning_dir: str | Path, user_high: str | Path | None,
     out_dir = Path(out_dir)
     user = {"high_noise_model": user_high, "low_noise_model": user_low}
 
-    # [#397/W10] Per-expert user strength. user_strength may be a float (both
-    # experts, unchanged behavior), a (high, low) tuple/list, or a dict keyed by
-    # expert name. Lets callers run the high-noise expert hot (e.g. 1.3-1.5, sets
-    # global style/color) while the low-noise stays ~1.0 — the ranked-but-unshipped
-    # lever from the restyle research. Float path is byte-identical to before.
+    # Per-expert user strength. user_strength may be a float (both experts), a
+    # (high, low) tuple/list, or a dict keyed by expert name. Lets callers run the
+    # high-noise expert hot (e.g. 1.3-1.5, sets global style/color) while the
+    # low-noise stays ~1.0. Float path is byte-identical to the scalar case.
     def _us(expert):
         if isinstance(user_strength, dict):
             return float(user_strength.get(expert, USER_DEFAULT_STRENGTH))
@@ -194,10 +192,10 @@ def combo_cache_path(cache_root: str | Path, lightning_dir: str | Path,
     the user file → new mtime/size → new key, so stale combos never serve.
 
     lightning_strength is folded in ONLY when it departs from the default 1.0,
-    so the plain-T2V combo key (always 1.0) is byte-identical to pre-#385 and
-    its cache is not invalidated. The Restyle path builds at 0.7 (measured
-    optimum: s8_d6_L0.7 = 0.812 style-sim vs 4-step 0.750, A/B 2026-06-11) and
-    must NOT collide with the 1.0 combo over the same user files."""
+    so the plain-T2V combo key (always 1.0) is stable and its cache is not
+    invalidated. The Restyle path builds at 0.7 (measured optimum: s8_d6_L0.7 =
+    0.812 style-sim vs 4-step 0.750) and must NOT collide with the 1.0 combo over
+    the same user files."""
     h = hashlib.sha1()
     h.update(str(Path(lightning_dir).name).encode())
     h.update(f"{user_strength:.4f}".encode())

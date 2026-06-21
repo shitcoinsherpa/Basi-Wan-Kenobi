@@ -1,5 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN K3N0B1: GGUF
+# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN KENOBI: GGUF
 # quantized path, block-swap offload, persistent worker, I2V graft, tiled
 # VAE, profiling. See THIRD_PARTY_LICENSES.md.
 import torch
@@ -18,7 +18,7 @@ except (ModuleNotFoundError, ImportError):
 
 import warnings
 
-# [Faster-Wan2.2 P28] Persistent cache of (q_lens, cu_seqlens) tensors keyed on
+# Persistent cache of (q_lens, cu_seqlens) tensors keyed on
 # (batch, seqlen, device). Stock built these per-call via torch.tensor([lq]*b).to(device)
 # + torch.cat([zeros, lens]).cumsum().to(device); each call yielded freshly-allocated
 # int32 tensors at different addresses. flash_attn_varlen_func captured those
@@ -65,12 +65,12 @@ def _scaled_dot_product_attention_fallback(
     k = k.transpose(1, 2).to(dtype)
     v = v.transpose(1, 2).to(dtype)
 
-    # [Faster-Wan2.2 P29] When called from a CUDA Graph capture (or anyone who
+    # When called from a CUDA Graph capture (or anyone who
     # wants the kernel-fused attention path that is graph-replay-safe), force
     # cuDNN flash attention. cuDNN silently refuses non-contiguous inputs
     # (transpose returned a view) and falls through to MATH which is ~46×
     # slower at our shapes. So .contiguous() the (now-(B,H,L,D)) tensors before
-    # invoking SDPA with the cuDNN backend pinned. Measured 2026-05-28:
+    # invoking SDPA with the cuDNN backend pinned. Measured:
     # contig+cuDNN-in-graph ≈ 8 ms per attn call vs 368 ms MATH.
     if prefer_cudnn:
         # cuDNN flash attention accepts the (B, H, L, D) view that .transpose(1, 2)
@@ -105,9 +105,9 @@ def flash_attention(
     version=None,
 ):
     """
-    q:              [B, Lq, Nq, C1].
-    k:              [B, Lk, Nk, C1].
-    v:              [B, Lk, Nk, C2]. Nq must be divisible by Nk.
+    q:              .
+    k:              .
+    v:              . Nq must be divisible by Nk.
     q_lens:         [B].
     k_lens:         [B].
     dropout_p:      float. Dropout probability.
@@ -119,9 +119,9 @@ def flash_attention(
     """
     half_dtypes = (torch.float16, torch.bfloat16)
     assert dtype in half_dtypes
-    # [Faster-Wan2.2 P29] When a CUDA Graph capture is underway, flash_attn
+    # When a CUDA Graph capture is underway, flash_attn
     # 2.8.3 reliably aborts the captured graph past ~4 calls (illegal memory
-    # access on RTX 4090; minimal repro 2026-05-28). flash_attn's internal
+    # access on RTX 4090; minimal repro). flash_attn's internal
     # workspace/softmax_lse buffer becomes stale on the 5th captured call.
     # SDPA's attention kernels ARE graph-replay-safe. Route to SDPA when
     # capturing so the captured graph stays valid. Eager paths keep flash_attn
@@ -135,7 +135,7 @@ def flash_attention(
             prefer_cudnn=True,
         )
 
-    # [Faster-Wan2.2 P32 v2 — 2026-05-31] SageAttention 2 (real v2.2.0+).
+    # SageAttention 2 (real v2.2.0+).
     # PRIOR (v1.0.6 from PyPI): INT8 QK + FP16 PV (Triton). On Wan2.2-A14B FP8
     # weights this produced black/collapsed frames on ~25% of prompts —
     # non-deterministically; thu-ml/SageAttention issues #93, #221, #273
@@ -152,7 +152,7 @@ def flash_attention(
     # NaN/Inf + std-collapse safety nets retained as belt-and-suspenders.
     # BASIWAN_SAGEATTN_DEBUG=1 to log fallback reasons.
     import os as _os
-    # [2026-06-05 audit JJ] Relaxed q_lens/k_lens gate. Original gate required
+    # Relaxed q_lens/k_lens gate. Original gate required
     # both None, which never fires in Wan (passes k_lens=seq_lens always). For
     # batch=1 production, seq_lens has 1 element == q.shape[1] (uniform). Allow
     # SageAttn when the lens are uniform (all equal to seq dim).
@@ -181,7 +181,7 @@ def flash_attention(
               f"no_dropout={_g9} | q_lens={q_lens} k_lens={k_lens} q.shape={tuple(q.shape)}",
               flush=True)
         flash_attention._sagegate_logged = True
-    # [2026-06-05] Accept fp32 input too (FP32-norms ship default produces fp32
+    # Accept fp32 input too (FP32-norms ship default produces fp32
     # q/k). Cast q/k/v to bf16 before SageAttn since INT8 QK quant is dtype-
     # insensitive — the FP32 precision benefit lives in the upstream norm, not
     # in the QK matmul that gets quantized to INT8 anyway.
@@ -233,7 +233,7 @@ def flash_attention(
     def half(x):
         return x if x.dtype in half_dtypes else x.to(dtype)
 
-    # [Faster-Wan2.2 P28] Track whether the caller supplied per-sample lens or
+    # Track whether the caller supplied per-sample lens or
     # whether we're in the uniform-batch case. Uniform case → fixed-batch
     # `flash_attn_func` (graph-safe). Varlen case → `flash_attn_varlen_func`
     # with cached cu_seqlens (stable addresses across captured calls).
@@ -265,7 +265,7 @@ def flash_attention(
             'Flash attention 3 is not available, use flash attention 2 instead.'
         )
 
-    # [Faster-Wan2.2 P1] BF16→FP16 recast: FP16 FA-2 kernel uses FP16-accum
+    # BF16→FP16 recast: FP16 FA-2 kernel uses FP16-accum
     # (2x tensor-core throughput) AND lets Br=128 fit without register spill.
     # Measured 1.60-1.70x speedup on Wan-typical shapes (b=1, hd=128, noncausal,
     # seq>=32k) on RTX 4090. Max abs diff vs BF16: 5e-4 — safely below diffusion
@@ -294,12 +294,12 @@ def flash_attention(
         cu_k = torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
             0, dtype=torch.int32).to(q.device, non_blocking=True)
 
-    # [Faster-Wan2.2 P28b] When the user didn't supply per-sample q_lens/k_lens
+    # When the user didn't supply per-sample q_lens/k_lens
     # (the Wan case — uniform length per batch), use the fixed-batch
     # `flash_attn_func` instead of `flash_attn_varlen_func`. The varlen path
     # has internal workspace/state that breaks CUDA Graph replay past ~5
     # captured calls (silent abort / illegal memory access on RTX 4090, observed
-    # 2026-05-28). The fixed-batch path uses a simpler call signature with no
+    # . The fixed-batch path uses a simpler call signature with no
     # cu_seqlens pointers, and the cuDNN/FA2 backend keeps its workspace shape
     # constant across calls of the same (b, lq, h, d) input — graph-replay safe.
     _use_uniform_fa = (

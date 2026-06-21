@@ -7,7 +7,7 @@ Mirrors basi/train.py (the Wan path) but targets MOVA's OWN trainer instead of m
     since MOVA's VideoAudioDataset reads metadata.json (not .txt).
   - the trainer is tools/mova_train_runner.py (the validated NF4-resident trainer = MOVA's
     equivalent of musubi's wan_train_network.py), launched via a generated mova_train.sh that
-    sets the CUDA-13 LD_LIBRARY_PATH bitsandbytes/torchcodec need (see mova-m1-setup-state memo).
+    sets the CUDA-13 LD_LIBRARY_PATH bitsandbytes/torchcodec need.
   - presets come from basi.presets.MovaPreset (240p / NF4 / rank by VRAM tier).
 
 Flow (mirror of prepare_training_run): output dir -> metadata.json -> launch script -> spawn.
@@ -33,12 +33,12 @@ MOVA_RUNNER = BASI_ROOT / "tools" / "mova_train_runner.py"
 OUTPUTS_ROOT = BASI_ROOT / "outputs"
 
 # --- MOVA training pre-flight estimate -------------------------------------------------
-# MEASURED this session on an RTX 4090 @ 240p NF4 rank16 (mova_24g): steady-state
-# ~10.5 s/step @49f and ~13 s/step @81f -> the step is compute-bound and ~linear in frame
-# count (s/step ~= 6.7 + 0.078*frames). VRAM peak ~16GB @81f (NF4 base ~10GB resident +
+# Tuned on an RTX 4090 @ 240p NF4 rank16 (mova_24g): steady-state ~10.5 s/step @49f and
+# ~13 s/step @81f -> the step is compute-bound and ~linear in frame count
+# (s/step ~= 6.7 + 0.078*frames). VRAM peak ~16GB @81f (NF4 base ~10GB resident +
 # activations). These give a ROUGH pre-flight so the user knows feasibility + time BEFORE
 # committing; a real run's first steps are the truth. Numbers are 4090-derived; slower
-# cards run proportionally slower (we only have 4090 data -> labelled in the UI).
+# cards run proportionally slower (labelled in the UI).
 _MOVA_SPS_INTERCEPT = 6.7       # s/step extrapolated to 0 frames (linear fit)
 _MOVA_SPS_PER_FRAME = 0.078     # s/step added per frame
 _MOVA_VRAM_BASE_GB = 10.0       # resident NF4 14B video tower + audio_dit + bridge
@@ -80,10 +80,13 @@ def format_mova_estimate_md(n_clips: int, frames: int, epochs: int, repeats: int
                 f"converge by epoch 4-8)")
     return (head + body + f" · {preset_name}.\n\n_Rough — measured on an RTX 4090 @240p NF4; "
             "slower cards take longer. The first few steps of a real run are the truth._")
-# MOVA runs in its own WSL conda env (torchcodec+bitsandbytes Linux-first); the launcher must
-# put the env's CUDA-13 nvidia libs on LD_LIBRARY_PATH. Overridable via env for portability.
-DEFAULT_MOVA_PYTHON = os.environ.get(
-    "MOVA_VENV_PYTHON", str(Path.home() / "miniforge3" / "envs" / "mova" / "bin" / "python"))
+# MOVA runs in its own venv (env_mova). A/V training (Gym) and generation (Studio) both run on
+# Windows + Linux. The interpreter is resolved by the SAME helper the inference path uses, so train
+# and generate share one env_mova for all users (env_mova first, BASIWAN_MOVA_PYTHON override,
+# dev WSL-conda fallback) -- NOT a dev-box path. The launcher puts that env's CUDA-13 nvidia libs
+# on LD_LIBRARY_PATH. MOVA_VENV_PYTHON kept as a legacy override for back-compat.
+from .mova_infer import resolve_mova_python as _resolve_mova_python
+DEFAULT_MOVA_PYTHON = os.environ.get("MOVA_VENV_PYTHON") or _resolve_mova_python()
 
 
 @dataclass
@@ -108,13 +111,19 @@ class MovaTrainConfig:
     rank: int | None = None              # None -> preset.rank
     base: str | None = None              # None -> preset.base ("nf4"|"fp8")
     trigger_word: str | None = None
+    # Style descriptor for the T2AV per-prompt reference maker (SDXL+IP-Adapter): a 3-5 word
+    # medium+look phrase, e.g. "claymation, stop-motion clay figures". The USER's value is
+    # authoritative (written to <ws>/style_tag.txt, skips the VLM guess) because small VLMs
+    # mis-ID the material (call clay "2D cel"/"felt"); if blank, prepare_mova_training_run lets
+    # the VLM SUGGEST one. The trained model never sees this — it only steers the SDXL reference.
+    style_descriptor: str | None = None
     # Sample prompts rendered (A/V) at BASELINE + every checkpoint (Wan-gym parity:
     # --sample_prompts + --sample_at_first). Include several, a couple OFF-style (no trigger)
     # to see baseline behavior + style bleed. None -> no sampling.
     sample_prompts: list[str] | None = None
     # Inline per-epoch A/V sampling forces the model OFF the GPU and back (to hand the card to the
-    # isolated sampler); on a 24GB card with the NF4 81f config that CPU<->GPU round-trip bloats the
-    # resumed peak 16.2->~20GB and OOMs at the FIRST epoch boundary (measured 2026-06-16). So default
+    # isolated sampler); on a 24GB card with the NF4 81f config that CPU<->GPU round-trip fragments
+    # alloc and bloats the resumed peak 16.2->~20GB, OOMing at the first epoch boundary. So default
     # OFF: train checkpoint-only (stable steady-state), then sample the saved checkpoints POST-HOC
     # (tools/mova_sample.py --lora <checkpoint_stepN>) to pick the best epoch. Enable only on a big
     # card (40GB+) where the round-trip fits. The sample_prompts file is still written either way.
@@ -137,7 +146,7 @@ def parse_mova_training_log(log_path) -> dict:
              summary: {last_step,total_steps,s_per_step,peak_gb,best_step,best_loss,
                        steps_per_epoch,best_epoch,audio_overtrain_step}}.
     audio_overtrain_step = first logged step after the total-loss minimum where audio loss has
-    risen meaningfully (the 'audio overtrains first' signal measured 2026-06-16). None if absent.
+    risen meaningfully (the 'audio overtrains first' signal). None if absent.
     Empty/missing log -> empty points + None summary fields (never raises)."""
     p = Path(log_path)
     points: list[dict] = []
@@ -245,10 +254,15 @@ def gen_mova_train_command(cfg: MovaTrainConfig, output_dir: Path, mova_python: 
     n_clips = max(1, _count_clips(cfg.dataset_dir))
     steps = cfg.max_train_epochs * n_clips * cfg.num_repeats
     save_every = max(1, cfg.save_every_n_epochs * n_clips * cfg.num_repeats)
+    # FORWARD-SLASH every path: the launcher writes these into a bash .sh run via Pinokio's bundled
+    # bash, where Windows backslashes are escape chars (D:\Pinokio -> D:Pinokio, mangled). Windows
+    # python accepts forward slashes, so '/' is safe on every OS. (Without this the Gym MOVA run
+    # works on Linux/WSL but breaks on a native-Windows install.)
+    _fs = lambda x: str(x).replace("\\", "/")
     cmd = [
-        mova_python, str(MOVA_RUNNER),
-        "--dataset", str(cfg.dataset_dir),
-        "--output", str(output_dir),
+        _fs(mova_python), _fs(MOVA_RUNNER),
+        "--dataset", _fs(cfg.dataset_dir),
+        "--output", _fs(output_dir),
         "--height", str(h), "--width", str(w), "--frames", str(frames),
         "--rank", str(cfg.rank or p.rank),
         "--alpha", str(getattr(p, "alpha", 0) or 0),
@@ -257,8 +271,8 @@ def gen_mova_train_command(cfg: MovaTrainConfig, output_dir: Path, mova_python: 
         "--steps", str(steps),
         "--save-every", str(save_every),
     ]
-    # v3 style-push levers from the preset (measured 2026-06-19): FFN LoRA on the video tower, and
-    # FREEZE the audio tower (audio is solved + overtrains; AV-sync lives in the trainable bridge).
+    # v3 style-push levers from the preset: FFN LoRA on the video DiT (attention-only underfits
+    # style), and FREEZE the audio tower (audio is solved + overtrains; AV-sync lives in the bridge).
     if getattr(p, "lora_ffn", False):
         cmd.append("--lora-ffn")
     if not getattr(p, "train_audio_tower", True):
@@ -280,10 +294,18 @@ def gen_mova_train_command(cfg: MovaTrainConfig, output_dir: Path, mova_python: 
 
 
 def gen_mova_launch_script(cmd: list[str], output_dir: Path, mova_python: str) -> Path:
-    """Write mova_train.sh: sets the CUDA-13 LD_LIBRARY_PATH (bitsandbytes/torchcodec) + alloc
-    conf, then runs the trainer. Mirrors gen_launch_script (Unix; MOVA is WSL/Linux-only)."""
-    env_root = Path(mova_python).resolve().parent.parent          # .../envs/mova
-    sp = env_root / "lib" / "python3.13" / "site-packages"
+    """Write mova_train.sh: sets the env_mova LD_LIBRARY_PATH (bitsandbytes/torchcodec) + alloc
+    conf, then runs the trainer. Run via Pinokio's bundled bash on Windows + Linux."""
+    _fs = lambda x: str(x).replace("\\", "/")   # bash-safe paths (see gen_mova_train_command)
+    _mp = Path(mova_python).resolve()
+    # python sits at <env>/bin/python (Unix) or <env>/python.exe / <env>/Scripts/python.exe (Windows
+    # conda root layout): env root is parent.parent only when the parent is bin/ or Scripts/.
+    env_root = _mp.parent.parent if _mp.parent.name.lower() in ("bin", "scripts") else _mp.parent
+    # site-packages: <env>/lib/python3.X/site-packages (Unix) OR <env>/Lib/site-packages (Windows).
+    # GLOB both (version varies: env_mova 3.12, dev WSL conda 3.13). LD_LIBRARY_PATH below is a
+    # Linux concern (a no-op on Windows), so a miss here is harmless on Windows.
+    _sps = sorted(env_root.glob("lib/python3.*/site-packages")) + sorted(env_root.glob("Lib/site-packages"))
+    sp = _sps[-1] if _sps else (env_root / "lib" / "python3.12" / "site-packages")
     script = output_dir / "mova_train.sh"
     cmd_str = " \\\n    ".join([str(x) for x in cmd])
     # Resolve the MOVA-360p weights portably (BASIWAN_CKPT_DIR or repo/checkpoints) and pin it
@@ -295,21 +317,23 @@ def gen_mova_launch_script(cmd: list[str], output_dir: Path, mova_python: str) -
         "#!/bin/bash\n"
         f"# BASI generated MOVA A/V training script for: {output_dir.name}\n"
         "set -e\n"
-        f'SP="{sp}"\n'
+        f'SP="{_fs(sp)}"\n'
         'NVLIBS=$(ls -d "$SP"/nvidia/*/lib 2>/dev/null | tr "\\n" ":")\n'
         'export LD_LIBRARY_PATH="${NVLIBS}${SP}/torch/lib:${LD_LIBRARY_PATH}"\n'
-        f'export MOVA_CKPT="{_mova_ckpt}"\n'
+        f'export MOVA_CKPT="{_fs(_mova_ckpt)}"\n'
         # NO expandable_segments: it pins large growable segments that torch.cuda.empty_cache() can't
         # release (any live block holds the whole segment) -> reserved stuck near 24GB, desktop frozen.
         # Our per-step shape is fixed (one clip), so expandable buys nothing; plain gc lets empty_cache
-        # actually return the slack (measured: 168MB -> 7160MB free). See mova-m2 memory note.
+        # actually return the slack (168MB -> 7160MB free).
         # max_split_size_mb:128 caps block-split size to curb FRAGMENTATION (the OOM cause at the
-        # sample->resume boundary 2026-06-16: the model CPU<->GPU round-trip re-allocated the 10GB NF4
-        # base fragmented, pushing the resumed peak 16.2->20.6GB). Unlike expandable_segments it does
+        # sample->resume boundary: the model CPU<->GPU round-trip re-allocated the 10GB NF4 base
+        # fragmented, pushing the resumed peak 16.2->20.6GB). Unlike expandable_segments it does
         # NOT bypass set_per_process_memory_fraction, so the desktop-headroom cap still holds.
         'export PYTORCH_CUDA_ALLOC_CONF="garbage_collection_threshold:0.6,max_split_size_mb:128"\n'
         "export HF_HUB_DISABLE_TELEMETRY=1 TOKENIZERS_PARALLELISM=false\n"
-        f"{cmd_str}\n", encoding="utf-8")
+        f"{cmd_str}\n", encoding="utf-8", newline="\n")   # LF only: this .sh runs under bash even
+    # on Windows (Pinokio's bundled bash); CRLF would put a \r on every line -> broken continuations
+    # and `$'--no-sample\r': command not found`. newline="\n" stops the Windows \n->\r\n translation.
     script.chmod(0o755)
     return script
 
@@ -331,6 +355,30 @@ def prepare_mova_training_run(cfg: MovaTrainConfig, mova_python: str | None = No
     metadata = gen_mova_metadata(cfg, Path(cfg.dataset_dir) / "metadata.json")
     cmd = gen_mova_train_command(cfg, output_dir, mova_python)
     script_path = gen_mova_launch_script(cmd, output_dir, mova_python)
+    # T2AV style assets: a VLM-chosen close-up style.png + a 3-5 word style_tag.txt for the SDXL+
+    # IP-Adapter per-prompt reference maker (the all-users generalization). Best-effort — never
+    # blocks training; the reference-maker falls back to ref.png if absent. Skipped via env for
+    # headless/no-VLM runs.
+    style_png = style_tag = None
+    _user_style = (cfg.style_descriptor or "").strip()
+    if os.environ.get("BASIWAN_SKIP_STYLE_ASSETS") != "1":
+        try:
+            from basi.caption import derive_mova_style_assets
+            import glob as _glob
+            clips = sorted(_glob.glob(str(Path(cfg.dataset_dir) / "videos" / "*.mp4"))) \
+                or sorted(_glob.glob(str(Path(cfg.dataset_dir) / "*.mp4")))
+            if clips:
+                # VLM picks the style.png FRAME (reliable); the style TAG is the user's value when
+                # given (authoritative — VLMs mis-ID material), else the VLM suggestion.
+                style_png, vlm_tag = derive_mova_style_assets(clips, output_dir)
+                style_tag = _user_style or vlm_tag
+                if _user_style:   # overwrite the VLM-suggested tag with the user's authoritative one
+                    (output_dir / "style_tag.txt").write_text(_user_style, encoding="utf-8")
+        except Exception as _e:
+            print(f"[mova-train] style-asset derivation skipped ({_e})", flush=True)
+    if _user_style and not style_tag:   # VLM skipped/failed but the user gave a descriptor — keep it
+        (output_dir / "style_tag.txt").write_text(_user_style, encoding="utf-8")
+        style_tag = _user_style
     return {
         "output_dir": str(output_dir),
         "metadata": str(metadata),
@@ -338,6 +386,8 @@ def prepare_mova_training_run(cfg: MovaTrainConfig, mova_python: str | None = No
         "command": cmd,
         "clips": n_clips,
         "schedule": schedule,
+        "style_png": style_png,
+        "style_tag": style_tag,
     }
 
 

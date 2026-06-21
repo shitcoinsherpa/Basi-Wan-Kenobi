@@ -5,12 +5,12 @@ partial blobs and no-ops when complete). Downloads:
   - Qwen3-VL-4B  — the Studio "Suggest next prompt" model (all tiers)
   - the VRAM-tier captioner (8B at 24G, 7B-AWQ at 16G, 4B at 12G)
 
-Rationale (2026-06-10): both models previously downloaded SILENTLY on
-first button click — 8-17 GB behind a frozen progress bar looked like a
-dead app. Downloads belong in install, where the Pinokio terminal shows
+Rationale: fetch these at install time, not on first button click —
+otherwise 8-17 GB downloads SILENTLY behind a frozen progress bar, which
+looks like a dead app. In install, the Pinokio terminal shows
 huggingface_hub's live byte progress. The app's launch-time background
-prefetch remains as the safety net for installs done before this script
-existed (or aborted downloads).
+prefetch remains as a safety net for installs that skipped or aborted
+these downloads.
 """
 import sys
 from pathlib import Path

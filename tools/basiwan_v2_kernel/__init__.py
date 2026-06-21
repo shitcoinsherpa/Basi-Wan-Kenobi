@@ -1,15 +1,11 @@
 """BASIWAN v2 — from-scratch Q4_K + Q6_K CUDA kernel for Wan2.2.
 
-See docs/DESIGN.md for the architecture rationale.
+The Python surface here is the BUILD/IMPORT layer that pytorch's
+cpp_extension uses.
 
-This module is multi-session work; the kernel is implemented incrementally
-across phases A through D. The Python surface here is the BUILD/IMPORT layer
-that pytorch's cpp_extension uses.
-
-Phase D has shipped (2026-06-06). Callers route to this module when
-`BASIWAN_V2=1` is set (the production ship default; see _env.sh).
-The `tools/gguf_vendor/q4_marlin` v1 kernel remains as fallback when
-BASIWAN_V2 is unset or on non-sm_89 GPUs.
+Callers route to this module when `BASIWAN_V2=1` is set (the production
+ship default; see _env.sh). The `tools/gguf_vendor/q4_marlin` v1 kernel
+remains as fallback when BASIWAN_V2 is unset or on non-sm_89 GPUs.
 """
 from __future__ import annotations
 
@@ -47,16 +43,13 @@ def _load_extension():
         "--use_fast_math",
         "-gencode=arch=compute_89,code=sm_89",
         f"--maxrregcount={maxrreg}",
-        # During Phase A development, keep -Xptxas=-v on so we can spot register
-        # pressure regressions immediately. Remove for Phase D ship build.
-        "-Xptxas=-v",
     ]
     if skip_qh:
         # DIAGNOSTIC ONLY: breaks Q6_K correctness, isolates qh-load cost.
         cflags.append("-DBASIWAN_V2_Q6K_SKIP_QH")
     if os.name == "nt":
         cflags.append("-allow-unsupported-compiler")
-        # 2026-06-08: direct-load cached .pyd to skip torch's build-chain
+        # direct-load cached.pyd to skip torch's build-chain
         # re-validation (which requires vcvarsall'd shell). Mirrors
         # basiwan_q4_kernel Windows-port fix.
         _torch_ext_root = Path(

@@ -438,7 +438,7 @@ def _t5(name,
         model_cls = T5Model
 
     # init model
-    # 2026-06-08: build empty params in the TARGET dtype from the start.
+    # build empty params in the TARGET dtype from the start.
     # Without this, nn.Embedding(256384, 4096) allocates 4.2 GB fp32 on CPU
     # and is then cast to bf16 (2.1 GB) — peak ~10 GB during T5 init on a
     # RAM-pressured Windows host. set_default_dtype halves the peak by
@@ -499,7 +499,7 @@ class T5EncoderModel:
         self.tokenizer_path = tokenizer_path
 
         # init model
-        # [2026-06-09 #368] Fast load: meta-device construction + mmap
+        # Fast load: meta-device construction + mmap
         # torch.load + load_state_dict(assign=True). The legacy path below
         # measured 274.8s of a 330s worker cold start (RTX 4090 Windows,
         # both pack caches hot): full random init of 5.8B params on CPU,

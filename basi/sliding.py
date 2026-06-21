@@ -1,4 +1,4 @@
-"""#387 sliding-window restyle — the two pure-logic, CPU-verifiable pieces:
+"""Sliding-window restyle — the two pure-logic, CPU-verifiable pieces:
 a window PLAN (frame arithmetic) and an LAB color-match (pixel post-process).
 
 The hard core — per-step overlap injection in LATENT space inside the denoise
@@ -6,7 +6,7 @@ loop — lives in wan/text2video.py and needs the GPU; it is built on top of the
 plan this module computes. Keeping the arithmetic and the color transfer here,
 unit-tested, means the GPU integration only has to wire proven parts.
 
-Scheme (Wan2GP sequential, per v2v_implementation_specs_2026-06-11):
+Scheme (Wan2GP sequential):
   window=81 pixel frames, overlap=9, discard=4.
   Wan VAE is 4x temporal-compressed: pixel f -> latent (f-1)//4 + 1.
     81 -> 21 latent frames; overlap 9 -> 3 latent frames (hence latents[:, :, :3]).

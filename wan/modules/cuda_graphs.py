@@ -8,7 +8,7 @@ import torch
 # torchao 0.13's FP8 `_scaled_mm` (cublasLt path) fails with
 # CUBLAS_STATUS_EXECUTION_FAILED on RTX 4090 (sm_89) when invoked on a non-default
 # CUDA stream unless cuBLASLt has an explicitly-sized workspace. Bumping the
-# workspace size via env var before any cuBLAS init fixes it (probe 2026-05-28:
+# workspace size via env var before any cuBLAS init fixes it (probe:
 # 16 MiB is sufficient at the Lightning shape; we go to 32 to be safe).
 # Setting the env after torch imports is a no-op for the existing context, so we
 # call torch._C._cuda_clearCublasWorkspaces() too to force re-init at our size.

@@ -1,4 +1,4 @@
-"""Live preview generator for BASI WAN K3N0B1.
+"""Live preview generator for BASI WAN KENOBI.
 
 Spawns a Faster-Wan2.2 inference subprocess to render a short clip from the most
 recent LoRA checkpoint. Uses Wan2.2-Lightning (4 denoise steps, CFG-free) + FP8
@@ -26,11 +26,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-# Defaults aligned with Faster-Wan2.2's Lightning recipe (FP8 + 4 steps, no CFG).
+# Defaults aligned with the Lightning recipe (FP8 + 4 steps, no CFG).
 # Override via env vars for Pinokio installs or alternate checkpoint layouts.
-# [2026-06-11 #381] Portable defaults: repo-relative, not any absolute dev
-# path. preview.py is basi/preview.py → repo root is one parent up.
-# checkpoints/ is where install.js downloads weights.
+# Repo-relative paths, not dev-box absolute: preview.py is basi/preview.py → repo
+# root is one parent up. checkpoints/ is where install.js downloads weights.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CKPT_BASE = os.environ.get("BASIWAN_CKPT_DIR", str(_REPO_ROOT / "checkpoints"))
 DEFAULT_BASIWAN_ROOT = os.environ.get("BASIWAN_ROOT", str(_REPO_ROOT))
@@ -72,9 +71,8 @@ def generate_preview(spec: PreviewSpec,
         raise FileNotFoundError(f"LoRA checkpoint not found: {spec.lora_path}")
     if not Path(ckpt_dir).exists():
         raise FileNotFoundError(f"Base Wan2.2 ckpt dir not found: {ckpt_dir}")
-    # [#356] The old Faster-Wan2.2 generate.py was dropped when the GGUF runner
-    # was vendored; preview now renders through the SAME validated path the Studio
-    # tab uses (Lightning+user-LoRA combo -> tools/run_one_video_gguf.py -> pt->mp4).
+    # Preview renders through the SAME validated path the Studio tab uses
+    # (Lightning+user-LoRA combo -> tools/run_one_video_gguf.py -> pt->mp4).
     _runner = Path(faster_wan_root) / "tools" / "run_one_video_gguf.py"
     if not _runner.exists():
         raise FileNotFoundError(
@@ -118,9 +116,9 @@ def generate_preview(spec: PreviewSpec,
                              "Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf")
     vae = Path(ckpt_dir) / "Wan2.1_VAE.pth"
 
-    # Build the Lightning + user-LoRA combo (the validated #391 mechanism). The
-    # user's single-file LoRA maps to the expert(s) it was trained for; the runner
-    # loads the combo dir's {high,low}_noise_model.safetensors via --lora-dir.
+    # Build the Lightning + user-LoRA combo. The user's single-file LoRA maps to
+    # the expert(s) it was trained for; the runner loads the combo dir's
+    # {high,low}_noise_model.safetensors via --lora-dir.
     _u = str(spec.lora_path)
     _e = spec.lora_expert
     user_high = _u if _e in ("high", "both") else None
@@ -134,8 +132,8 @@ def generate_preview(spec: PreviewSpec,
     meta_out = out.with_suffix(".preview.json")
 
     env = os.environ.copy()
-    # The runner reads these ship-recipe perf flags; the old generate.py-specific
-    # BASIWAN_USER_LORA*/LORA_DIR are replaced by the combo dir, so clear them.
+    # The runner reads these ship-recipe perf flags; the combo dir supplies the
+    # LoRA, so clear any BASIWAN_USER_LORA*/LORA_DIR that would conflict.
     env.setdefault("BASIWAN_V2", "1")
     env.setdefault("BASIWAN_USE_PACK_CACHE", "1")
     env.setdefault("BASIWAN_NO_POOL", "1")

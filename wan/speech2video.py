@@ -15,7 +15,7 @@ import torch
 import torch.cuda.amp as amp
 import torch.distributed as dist
 import torchvision.transforms.functional as TF
-# [2026-06-13 BASIWAN change] `decord` is imported lazily inside load_pose_cond
+# `decord` is imported lazily inside load_pose_cond
 # (its only use) — it is fragile to install on Windows and only the optional
 # pose-video feature needs it, so the core audio->video S2V path must not require
 # it at import time. (Apache-2.0 derived-file change note.)
@@ -494,13 +494,13 @@ class WanS2V:
         if num_repeat is None or num_repeat > nr:
             num_repeat = nr
 
-        # [S10-debug] localize the multi-chunk 720p memory climb (BASIWAN_S2V_MEMDEBUG=1).
+        # localize the multi-chunk 720p memory climb (BASIWAN_S2V_MEMDEBUG=1).
         import os as _os
         _memdbg = _os.environ.get("BASIWAN_S2V_MEMDEBUG") == "1"
         _leaktrace = _os.environ.get("BASIWAN_S2V_LEAKTRACE") == "1"
         _snapshot = _os.environ.get("BASIWAN_S2V_SNAPSHOT") == "1"
         if _snapshot:
-            # [S10] record every alloc WITH its python stack -> the snapshot's live
+            # record every alloc WITH its python stack -> the snapshot's live
             # blocks at chunk 1 pinpoint the exact line that allocated the retained leak.
             torch.cuda.memory._record_memory_history(max_entries=400000)
         def _mdump(tag):
@@ -513,7 +513,7 @@ class WanS2V:
             print(f"[s2v-mem] {tag}: alloc={_a:.2f} reserved={_r:.2f} free={_f:.2f} GB",
                   flush=True)
         def _leakdump(tag):
-            # [S10] gc-based live CUDA tensor census: aggregate every reachable cuda
+            # gc-based live CUDA tensor census: aggregate every reachable cuda
             # tensor by (shape,dtype) -> MB. Diff between chunk 0 and chunk 1 START is
             # the LEAKED set; its shapes identify exactly what is retained.
             if not _leaktrace:
@@ -547,7 +547,7 @@ class WanS2V:
                   f"num_repeat={num_repeat}", flush=True)
         _mdump("after encode_audio")
 
-        # [S8 2026-06-13 BASIWAN] Cross-chunk LAB color anchor (anti-drift insurance
+        # Cross-chunk LAB color anchor (anti-drift insurance
         # for long clips). Native chaining (motion-latent carry + per-chunk ref re-
         # inject) is measured coherent to ~30s (drift 1.61 dLAB / 6 chunks, sub-JND);
         # over MANY chunks small exposure/WB offsets can accumulate past the ~2.3 JND.
@@ -692,7 +692,7 @@ class WanS2V:
                         ],
                         "drop_motion_frames": drop_first_motion and r == 0,
                     }
-                # [2026-06-13 BASIWAN] When block-swap manages DiT residency
+                # When block-swap manages DiT residency
                 # itself, this full-model .to(device) would move ALL 40 blocks to
                 # GPU and defeat the swap (profiled: ~9.5GB of swapped-block packed
                 # weights pile up at the loop's peak). Skip it; block-swap keeps
@@ -702,7 +702,7 @@ class WanS2V:
                     self.noise_model.to(self.device)
                     torch.cuda.empty_cache()
 
-                # [S10] Reclaim reserved-but-unused cache BEFORE each chunk's step loop.
+                # Reclaim reserved-but-unused cache BEFORE each chunk's step loop.
                 # At 720p the DiT step activation sits right at the 24GB wall, and the
                 # allocator otherwise carries ~1.6GB of reserved fragmentation from the
                 # pipe build (and accumulates more across chunks) -- enough to tip a
@@ -759,7 +759,7 @@ class WanS2V:
                     image = image[:, :, 3:]
                 _mdump(f"chunk r={r} after vae.decode")
 
-                # [S8] Anti-drift color anchor. Capture chunk-0's mean colour as the
+                # Anti-drift color anchor. Capture chunk-0's mean colour as the
                 # fixed anchor; re-align every later chunk to it IN PLACE so the
                 # motion-carry conditioning below and the appended output share the
                 # corrected colour (no output/conditioning divergence). Strength 0 /
@@ -785,7 +785,7 @@ class WanS2V:
                 motion_latents = torch.stack(
                     self.vae.encode(videos_last_frames))
                 out.append(image.cpu())
-                # [S10] Cross-chunk cleanup. The per-chunk arg_c/arg_null dicts hold big
+                # Cross-chunk cleanup. The per-chunk arg_c/arg_null dicts hold big
                 # GPU tensors (input_motion_latents clone, audio_input, cond/ref latents,
                 # the forward's cached transients) and are only replaced at the NEXT
                 # chunk's top -- so chunk r's allocations stay LIVE across the boundary
@@ -801,7 +801,7 @@ class WanS2V:
                     del noise_pred, noise_pred_cond
                 except NameError:
                     pass
-                # [S10] THE leak fix: WanModel_S2V.forward stashes big GPU tensors on
+                # THE leak fix: WanModel_S2V.forward stashes big GPU tensors on
                 # the model itself -- self.pre_compute_freqs (the ~1GB complex128 RoPE
                 # embedding for the full seq), self.merged_audio_emb, self.audio_emb_global
                 # (model_s2v.py:752/694/690). They're held by `self`, so empty_cache and

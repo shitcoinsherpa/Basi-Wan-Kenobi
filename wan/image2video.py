@@ -1,5 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN K3N0B1: GGUF
+# Modified from Wan-Video/Wan2.2 (Apache-2.0) for BASI WAN KENOBI: GGUF
 # quantized path, block-swap offload, persistent worker, I2V graft, tiled
 # VAE, profiling. See THIRD_PARTY_LICENSES.md.
 import gc

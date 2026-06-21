@@ -1,8 +1,8 @@
-"""#393 ETA — pre-flight wall estimate + an EMA wall-time cache that learns from
+"""ETA — pre-flight wall estimate + an EMA wall-time cache that learns from
 every completed run. Pure functions (no torch, no gradio) so the formula + cache
 are unit-testable in tools/_smoke_eta.py.
 
-Design (the formula was previously only a comment at app.py:1204-1213):
+Design:
   wall ~= ANCHOR * (steps/4) * cfg * (frames/17)^1.5 * (pixels / (1280*720))
   ANCHOR = 64 s, the MEASURED champion p720/17f/4-step/guide=1 wall.
   cfg = 2.0 when guide != 1.0 (CFG runs cond+uncond every step), else 1.0.
